@@ -17,7 +17,7 @@
 #
 
 class PseudonymSessionsController < ApplicationController
-  protect_from_forgery :except => [:create, :destroy, :saml_consume, :oauth2_token]
+  protect_from_forgery :except => [:create, :destroy, :saml_consume, :saml_logout, :oauth2_token]
   before_filter :forbid_on_files_domain, :except => [ :clear_file_session ]
   before_filter :require_password_session, :only => [ :otp_login, :disable_otp_login ]
   before_filter :require_user, :only => [ :otp_login ]
@@ -207,6 +207,10 @@ class PseudonymSessionsController < ApplicationController
         settings = aac.saml_settings(request.host_with_port)
         request = Onelogin::Saml::LogOutRequest.new(settings, session)
         forward_url = request.generate_request
+# davidj - TODO this will be needed to generate a signed request for ADFS
+# It depends on additional customizations to the OneLogin SAML gem
+#        private_key = File.open("canvas_saml_private_key.pem").read
+#        forward_url = request.generate_signed_request(private_key)
 
         if aac.debugging? && aac.debug_get(:logged_in_user_id) == @current_user.id
           aac.debug_set(:logout_request_id, request.id)
@@ -308,9 +312,19 @@ class PseudonymSessionsController < ApplicationController
         aac.debug_set(:login_to_canvas_success, 'false')
       end
 
+# davidj - hacked in an alternative validation based on a separate HMAC parameter
+# because I found XML digsig to be not well supported in python3
+      valid = false
+      if params[:sig]
+        digest = OpenSSL::Digest::Digest.new('sha256')
+        key = "BlwWrf3hVTT06c604Ycs"
+        hmac = OpenSSL::HMAC.digest(digest, key, params[:SAMLResponse])
+        valid = hmac == Base64.decode64(params[:sig])
+      end
+
       login_error_message = t 'errors.login_error', "There was a problem logging in at %{institution}", :institution => @domain_root_account.display_name
 
-      if response.is_valid?
+      if valid or response.is_valid?
         aac.debug_set(:is_valid_login_response, 'true') if debugging
         
         if response.success_status?
