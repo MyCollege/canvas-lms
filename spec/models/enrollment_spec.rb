@@ -94,6 +94,19 @@ describe Enrollment do
     e.readable_type.should eql('Student')
   end
 
+  describe "sis_role" do
+    it "should return role_name if present" do
+      e = TaEnrollment.new
+      e.role_name = 'Assistant Grader'
+      e.sis_role.should == 'Assistant Grader'
+    end
+
+    it "should return the sis enrollment type otherwise" do
+      e = TaEnrollment.new
+      e.sis_role.should == 'ta'
+    end
+  end
+
   it "should not allow an associated_user_id on a non-observer enrollment" do
     observed = User.create!
 
@@ -356,7 +369,7 @@ describe Enrollment do
         @enrollment.accept.should be_true
       end
 
-      def course_section_availability_test
+      def course_section_availability_test(should_be_invited=false)
         @section = @course.course_sections.first
         @section.should_not be_nil
         @enrollment.course_section = @section
@@ -377,19 +390,29 @@ describe Enrollment do
         @enrollment.workflow_state = 'invited'
         @enrollment.save!
         @enrollment.state.should eql(:invited)
-        @enrollment.state_based_on_date.should eql(:completed)
-        @enrollment.accept.should be_false
+        if should_be_invited
+          @enrollment.state_based_on_date.should eql(:invited)
+          @enrollment.accept.should be_true
+        else
+          @enrollment.state_based_on_date.should eql(:completed)
+          @enrollment.accept.should be_false
+        end
 
         @section.start_at = 2.days.from_now
         @section.end_at = 4.days.from_now
         @section.save!
         @enrollment.save!
-        @enrollment.state.should eql(:invited)
-        @enrollment.state_based_on_date.should eql(:invited)
-        @enrollment.accept.should be_true
+        if should_be_invited
+          @enrollment.state.should eql(:active)
+          @enrollment.state_based_on_date.should eql(:active)
+        else
+          @enrollment.state.should eql(:invited)
+          @enrollment.state_based_on_date.should eql(:invited)
+          @enrollment.accept.should be_true
+        end
       end
 
-      def course_availability_test
+      def course_availability_test(state_based_state)
         @course.start_at = 2.days.ago
         @course.conclude_at = 2.days.from_now
         @course.restrict_enrollments_to_course_dates = true
@@ -409,7 +432,7 @@ describe Enrollment do
         @enrollment.state.should eql(:invited)
         @enrollment.accept
         @enrollment.reload.state.should eql(:active)
-        @enrollment.state_based_on_date.should eql(:completed)
+        @enrollment.state_based_on_date.should eql(state_based_state)
 
         @course.start_at = 2.days.from_now
         @course.conclude_at = 4.days.from_now
@@ -515,7 +538,7 @@ describe Enrollment do
         end
 
         it "should accept into the right state based on availability dates on course" do
-          course_availability_test
+          course_availability_test(:completed)
         end
 
         it "should accept into the right state based on availability dates on enrollment_term" do
@@ -550,11 +573,11 @@ describe Enrollment do
         end
 
         it "should accept into the right state based on availability dates on course_section" do
-          course_section_availability_test
+          course_section_availability_test(true)
         end
 
         it "should accept into the right state based on availability dates on course" do
-          course_availability_test
+          course_availability_test(:active)
         end
 
         it "should accept into the right state based on availability dates on enrollment_term" do

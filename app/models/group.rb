@@ -321,7 +321,7 @@ class Group < ActiveRecord::Base
     can :delete and
     can :manage and
     can :manage_admin_users and
-    can :manage_students and 
+    can :manage_students and
     can :moderate_forum and
     can :update
 
@@ -514,5 +514,9 @@ class Group < ActiveRecord::Base
 
   def default_collection_name
     t "#group.default_collection_name", "%{group_name}'s Collection", :group_name => self.name
+  end
+
+  def associated_shards
+    [Shard.default]
   end
 end

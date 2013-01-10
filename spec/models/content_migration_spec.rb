@@ -209,6 +209,17 @@ describe ContentMigration do
       @copy_to.grading_standard.should == nil
     end
 
+    it "should not copy deleted grading standards" do
+      gs = make_grading_standard(@copy_from)
+      @copy_from.grading_standard_enabled = true
+      @copy_from.save!
+
+      gs.destroy
+      run_course_copy
+
+      @copy_to.grading_standards.should be_empty
+    end
+
 
     def mig_id(obj)
       CC::CCHelper.create_key(obj)
@@ -568,8 +579,8 @@ describe ContentMigration do
       new_lo.id.should_not == 0
       new_lo.short_description.should == hash["title"]
     end
-    
-    it "should link rubric to outcomes" do 
+
+    it "should link rubric (and assignments) to outcomes" do 
       root_group = LearningOutcomeGroup.create!(:title => "contextless group")
       
       lo = create_outcome(nil, root_group)
@@ -596,17 +607,23 @@ describe ContentMigration do
           :learning_outcome_id => lo2.id
         }
       ]
-      rub.instance_variable_set('@outcomes_changed', true)
+      rub.alignments_changed = true
       rub.save!
       rub.associate_with(@copy_from, @copy_from)
+
+      from_assign = @copy_from.assignments.create!(:title => "some assignment")
+      rub.associate_with(from_assign, @copy_from, :purpose => "grading")
       
       run_course_copy
       
       new_lo2 = @copy_to.created_learning_outcomes.find_by_migration_id(mig_id(lo2))
       to_rub = @copy_to.rubrics.first
+      to_assign = @copy_to.assignments.first
       
       to_rub.data[1]["learning_outcome_id"].should == new_lo2.id
       to_rub.data[0]["learning_outcome_id"].should == lo.id
+      to_rub.learning_outcome_alignments.map(&:learning_outcome_id).sort.should == [lo.id, new_lo2.id].sort
+      to_assign.learning_outcome_alignments.map(&:learning_outcome_id).sort.should == [lo.id, new_lo2.id].sort
     end
 
     it "should copy a quiz when assignment is selected" do
@@ -617,8 +634,8 @@ describe ContentMigration do
       @quiz.assignment.should_not be_nil
 
       @cm.copy_options = {
-              :assignments => {mig_id(@quiz.assignment) => "1"},
-              :quizzes => {mig_id(@quiz) => "0"},
+        :assignments => {mig_id(@quiz.assignment) => "1"},
+        :quizzes => {mig_id(@quiz) => "0"},
       }
       @cm.save!
 
@@ -1085,7 +1102,9 @@ describe ContentMigration do
               :ip_filter => '192.168.1.1',
               :require_lockdown_browser => true,
               :require_lockdown_browser_for_results => true,
-              :notify_of_update => true
+              :notify_of_update => true,
+              :one_question_at_a_time => true,
+              :cant_go_back => true
       )
 
       run_course_copy

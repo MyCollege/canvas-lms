@@ -50,6 +50,7 @@ require 'set'
 #       enrollments: [
 #         {
 #           type: student,
+#           role: StudentEnrollment,
 #           computed_final_score: 41.5,
 #           computed_current_score: 90,
 #           computed_final_grade: 'A-'
@@ -83,7 +84,14 @@ class CoursesController < ApplicationController
   # @argument enrollment_type [optional, "teacher"|"student"|"ta"|"observer"|"designer"]
   #   When set, only return courses where the user is enrolled as this type. For
   #   example, set to "teacher" to return only courses where the user is
-  #   enrolled as a Teacher.
+  #   enrolled as a Teacher.  This argument is ignored if enrollment_role is given.
+  #
+  # @argument enrollment_role [optional]
+  #   When set, only return courses where the user is enrolled with the specified
+  #   course-level role.  This can be a role created with the
+  #   {api:RoleOverridesController#add_role Add Role API} or a base role type of
+  #   ‘StudentEnrollment’, ‘TeacherEnrollment’, ‘TaEnrollment’, ‘ObserverEnrollment’,
+  #   or ‘DesignerEnrollment’.
   #
   # @argument include[] ["needs_grading_count"] Optional information to include with each Course.
   #   When needs_grading_count is given, and the current user has grading
@@ -121,7 +129,9 @@ class CoursesController < ApplicationController
 
       format.json {
         enrollments = @current_user.cached_current_enrollments
-        if params[:enrollment_type]
+        if params[:enrollment_role]
+          enrollments = enrollments.reject { |e| (e.role_name || e.class.name) != params[:enrollment_role] }
+        elsif params[:enrollment_type]
           e_type = "#{params[:enrollment_type].capitalize}Enrollment"
           enrollments = enrollments.reject { |e| e.class.name != e_type }
         end
@@ -290,6 +300,12 @@ class CoursesController < ApplicationController
   #
   # @argument enrollment_type [optional, "teacher"|"student"|"ta"|"observer"|"designer"]
   #   When set, only return users where the user is enrolled as this type.
+  #   This argument is ignored if enrollment_role is given.
+  # @argument enrollment_role [optional]
+  #   When set, only return users enrolled with the specified course-level role.  This can be
+  #   a role created with the {api:RoleOverridesController#add_role Add Role API} or a
+  #   base role type of ‘StudentEnrollment’, ‘TeacherEnrollment’, ‘TaEnrollment’,
+  #   ‘ObserverEnrollment’, or ‘DesignerEnrollment’.
   #
   # @argument include[] ["email"] Optional user email.
   # @argument include[] ["enrollments"] Optionally include with each Course the
@@ -305,11 +321,16 @@ class CoursesController < ApplicationController
   def users
     get_context
     if authorized_action(@context, @current_user, :read_roster)
+      enrollment_role = Array(params[:enrollment_role]) if params[:enrollment_role]
       enrollment_type = Array(params[:enrollment_type]).map { |e| "#{e.capitalize}Enrollment" } if params[:enrollment_type]
       users = @context.users_visible_to(@current_user)
       # TODO: convert this to the good user sorting stuff
       users = users.scoped(:order => "users.sortable_name")
-      users = users.scoped(:conditions => ["enrollments.type IN (?) ", enrollment_type]) if enrollment_type
+      if enrollment_role
+        users = users.scoped(:conditions => ["COALESCE(enrollments.role_name, enrollments.type) IN (?) ", enrollment_role])
+      elsif enrollment_type
+        users = users.scoped(:conditions => ["enrollments.type IN (?) ", enrollment_type])
+      end
 
       # If a user_id is passed in, modify the page parameter so that the page
       # that contains that user is returned.
@@ -432,7 +453,7 @@ class CoursesController < ApplicationController
     else
       return unless authorized_action(@context, @current_user, permission_for_event(params[:event]))
 
-      @context.soft_conclude!
+      @context.complete
       if @context.save
         flash[:notice] = t('notices.concluded', "Course successfully concluded")
       else
@@ -451,7 +472,7 @@ class CoursesController < ApplicationController
   def statistics
     get_context
     if authorized_action(@context, @current_user, :read_reports)
-      @student_ids = @context.students.map &:id
+      @student_ids = @context.student_ids
       @range_start = Date.parse("Jan 1 2000")
       @range_end = Date.tomorrow
 
@@ -757,46 +778,21 @@ class CoursesController < ApplicationController
 
   def self_unenrollment
     get_context
-    unless @context_enrollment && params[:self_unenrollment] && params[:self_unenrollment] == @context_enrollment.uuid && @context_enrollment.self_enrolled?
-      redirect_to course_url(@context)
-      return
+    if @context_enrollment && params[:self_unenrollment] && params[:self_unenrollment] == @context_enrollment.uuid && @context_enrollment.self_enrolled?
+      @context_enrollment.conclude
+      render :json => ""
+    else
+      render :json => "", :status => :bad_request
     end
-    @context_enrollment.complete
-    redirect_to course_url(@context)
   end
 
+  # DEPRECATED
   def self_enrollment
     get_context
     unless @context.self_enrollment && params[:self_enrollment] && @context.self_enrollment_codes.include?(params[:self_enrollment])
       return redirect_to course_url(@context)
     end
-    unless @current_user || @context.root_account.open_registration?
-      store_location
-      flash[:notice] = t('notices.login_required', "Please log in to join this course.")
-      return redirect_to login_url
-    end
-    if @current_user
-      @enrollment = @context.self_enroll_student(@current_user)
-      flash[:notice] = t('notices.enrolled', "You are now enrolled in this course.")
-      return redirect_to course_url(@context)
-    end
-    if params[:email]
-      begin
-        address = TMail::Address::parse(params[:email])
-      rescue
-        flash[:error] = t('errors.invalid_email', "Invalid e-mail address, please try again.")
-        render :action => 'open_enrollment'
-        return
-      end
-      user = User.new(:name => address.name || address.address)
-      user.communication_channels.build(:path => address.address)
-      user.workflow_state = 'creation_pending'
-      user.save!
-      @enrollment = @context.enroll_student(user)
-      @enrollment.update_attribute(:self_enrolled, true)
-      return render :action => 'open_enrollment_confirmed'
-    end
-    render :action => 'open_enrollment'
+    redirect_to enroll_url(@context.self_enrollment_code)
   end
 
   def check_pending_teacher
@@ -879,6 +875,8 @@ class CoursesController < ApplicationController
 
     @context_enrollment ||= @pending_enrollment
     if is_authorized_action?(@context, @current_user, :read)
+      check_incomplete_registration
+
       if @current_user && @context.grants_right?(@current_user, session, :manage_grades)
         @assignments_needing_publishing = @context.assignments.active.need_publishing || []
       end
@@ -915,6 +913,7 @@ class CoursesController < ApplicationController
           @contexts += @user_groups if @user_groups
         end
         @current_conferences = @context.web_conferences.select{|c| c.active? && c.users.include?(@current_user) }
+        @stream_items = @current_user.try(:cached_recent_stream_items, { :contexts => @contexts }) || []
       end
 
       if @current_user and (@show_recent_feedback = @context.user_is_student?(@current_user))
@@ -1172,8 +1171,8 @@ class CoursesController < ApplicationController
         @course.root_account = Account.root_accounts.find(root_account_id)
       end
       standard_id = params[:course].delete :grading_standard_id
-      if standard_id && @course.grants_right?(@current_user, session, :manage_grades)
-        @course.grading_standard = GradingStandard.standards_for(@course).detect{|s| s.id == standard_id.to_i }
+      if standard_id.present? && @course.grants_right?(@current_user, session, :manage_grades)
+        @course.grading_standard = GradingStandard.standards_for(@course).find_by_id(standard_id)
       end
       if @course.root_account.grants_right?(@current_user, session, :manage_courses)
         if params[:course][:account_id]

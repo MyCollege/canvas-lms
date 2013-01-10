@@ -33,7 +33,7 @@ describe "gradebook2" do
     visible_students[0].text.should == 'student 1'
   end
 
-  it "should link to a student's grades page" do
+  it "should link to a students grades page" do
     get "/courses/#{@course.id}/gradebook2"
     wait_for_ajaximations
     els = ff('.student-name')
@@ -42,11 +42,11 @@ describe "gradebook2" do
     links.should == expected_links
   end
 
-  it "should not show 'not-graded' assignments" do
+  it "should not show not-graded assignments" do
     f('#gradebook_grid .slick-header').should_not include_text(@ungraded_assignment.title)
   end
 
-  it "should notify user that no updates are made if default grade assignment doesn't change anything" do
+  it "should notify user that no updates are made if default grade assignment doesnt change anything" do
     get "/courses/#{@course.id}/gradebook2"
 
     ##
@@ -219,7 +219,7 @@ describe "gradebook2" do
 
     dialog = open_comment_dialog
     set_value(dialog.find_element(:id, "add_a_comment"), comment_text)
-    f("form.submission_details_add_comment_form.clearfix > button.button").click
+    f("form.submission_details_add_comment_form.clearfix > button.btn").click
     wait_for_ajaximations
 
     #make sure it is still there if you reload the page
@@ -252,7 +252,7 @@ describe "gradebook2" do
     dialog = open_comment_dialog(3)
     set_value(dialog.find_element(:id, "add_a_comment"), comment_text)
     dialog.find_element(:id, "group_comment").click
-    f("form.submission_details_add_comment_form.clearfix > button.button").click
+    f("form.submission_details_add_comment_form.clearfix > button.btn").click
     wait_for_ajaximations
 
     #make sure it's on the other student's submission
@@ -348,7 +348,7 @@ describe "gradebook2" do
       }.to change {ConversationMessage.count(:conversation_id)}.by(1)
     end
 
-    it "should send messages when 'Scored more than' X points" do
+    it "should send messages when Scored more than X points" do
       message_text = "This is a message"
       get "/courses/#{@course.id}/gradebook2"
       wait_for_ajaximations
@@ -365,7 +365,7 @@ describe "gradebook2" do
       }.to change(ConversationMessage, :count).by_at_least(2)
     end
 
-    it "should have a 'Haven't been graded' option" do
+    it "should have a Have not been graded option" do
       # student 2 has submitted assignment 3, but it hasn't been graded
       submission = @third_assignment.submit_homework(@student_2, :body => 'student 2 submission assignment 3')
       submission.save!
@@ -561,13 +561,14 @@ describe "gradebook2" do
       f('input[name=submissions_zip]').send_keys(fixtureFile)
 
       # And I upload it
-      fj('button:contains("Upload Files")').click
-
-      # And I wait for the upload
-      sleep 1
+      expect_new_page_load do
+        fj('button:contains("Upload Files")').click
+        # And I wait for the upload
+        wait_for_ajax_requests
+      end
 
       # Then I should see a message indicating the file was processed
-      f('body').should include_text 'Attached files to the following user submissions'
+      f('#content h3').should include_text 'Attached files to the following user submissions'
     end
   end
 end

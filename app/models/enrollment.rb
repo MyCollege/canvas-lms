@@ -79,7 +79,7 @@ class Enrollment < ActiveRecord::Base
       :sqlite     => default_sql.gsub("{{now}}", "datetime('now')"),
       :mysql => <<-MYSQL }
         IF #{no_other_enrollments_sql} THEN
-          UPDATE assignments, submissions SET needs_grading_count = needs_grading_count + %s, updated_at = utc_timestamp()
+          UPDATE assignments, submissions SET needs_grading_count = needs_grading_count + %s, assignments.updated_at = utc_timestamp()
           WHERE context_id = NEW.course_id
             AND context_type = 'Course'
             AND assignments.id = submissions.assignment_id
@@ -137,11 +137,21 @@ class Enrollment < ActiveRecord::Base
 
   named_scope :active,
               :conditions => ['enrollments.workflow_state != ?', 'deleted']
+
   named_scope :admin,
               :select => 'course_id',
               :joins => :course,
               :conditions => "enrollments.type IN ('TeacherEnrollment','TaEnrollment', 'DesignerEnrollment')
                               AND (courses.workflow_state = 'claimed' OR (enrollments.workflow_state = 'active' and  courses.workflow_state = 'available'))"
+
+  named_scope :of_admin_type,
+              :conditions => "enrollments.type IN ('TeacherEnrollment','TaEnrollment', 'DesignerEnrollment')"
+
+  named_scope :of_instructor_type,
+              :conditions => "enrollments.type IN ('TeacherEnrollment','TaEnrollment')"
+
+  named_scope :of_content_admins,
+              :conditions => "enrollments.type IN ('TeacherEnrollment', 'DesignerEnrollment')"
 
   named_scope :student,
               :select => 'course_id',
@@ -198,6 +208,42 @@ class Enrollment < ActiveRecord::Base
 
   def self.readable_type(type)
     READABLE_TYPES[type] || READABLE_TYPES['StudentEnrollment']
+  end
+
+  SIS_TYPES = {
+      'TeacherEnrollment' => 'teacher',
+      'TaEnrollment' => 'ta',
+      'DesignerEnrollment' => 'designer',
+      'StudentEnrollment' => 'student',
+      'ObserverEnrollment' => 'observer'
+  }
+  def self.sis_type(type)
+    SIS_TYPES[type] || SIS_TYPES['StudentEnrollment']
+  end
+
+  def sis_role
+    self.role_name || Enrollment.sis_type(self.type)
+  end
+
+  def self.valid_types
+    SIS_TYPES.keys
+  end
+
+  def self.valid_type?(type)
+    SIS_TYPES.has_key?(type)
+  end
+
+  TYPES_WITH_INDEFINITE_ARTICLE = {
+    'TeacherEnrollment' => t('#enrollment.roles.teacher_with_indefinite_article', "A Teacher"),
+    'TaEnrollment' => t('#enrollment.roles.ta_with_indefinite_article', "A TA"),
+    'DesignerEnrollment' => t('#enrollment.roles.designer_with_indefinite_article', "A Designer"),
+    'StudentEnrollment' => t('#enrollment.roles.student_with_indefinite_article', "A Student"),
+    'StudentViewEnrollment' => t('#enrollment.roles.student_with_indefinite_article', "A Student"),
+    'ObserverEnrollment' => t('#enrollment.roles.observer_with_indefinite_article', "An Observer")
+  }
+
+  def self.type_with_indefinite_article(type)
+    TYPES_WITH_INDEFINITE_ARTICLE[type] || TYPES_WITH_INDEFINITE_ARTICLE['StudentEnrollment']
   end
 
   def should_update_user_account_association?
@@ -454,13 +500,13 @@ class Enrollment < ActiveRecord::Base
     res
   end
 
-  def accept
-    return false unless invited?
+  def accept(force = false)
+    return false unless force || invited?
     ids = nil
     ids = self.user.dashboard_messages.find_all_by_context_id_and_context_type(self.id, 'Enrollment', :select => "id").map(&:id) if self.user
     Message.delete_all({:id => ids}) if ids && !ids.empty?
     update_attribute(:workflow_state, 'active')
-    user.touch
+    touch_user
   end
 
   workflow do
@@ -569,9 +615,13 @@ class Enrollment < ActiveRecord::Base
   def has_permission_to?(action)
     @permission_lookup ||= {}
     unless @permission_lookup.has_key? action
-      @permission_lookup[action] = RoleOverride.permission_for(self, action, self.class.to_s)[:enabled]
+      @permission_lookup[action] = RoleOverride.permission_for(course, action, base_role_name, self.role_name)[:enabled]
     end
     @permission_lookup[action]
+  end
+
+  def base_role_name
+    self.class.to_s
   end
 
   # Determine if a user has permissions to conclude this enrollment.
@@ -740,7 +790,7 @@ class Enrollment < ActiveRecord::Base
   def student?
     false
   end
-  
+
   def fake_student?
     false
   end
@@ -965,5 +1015,9 @@ class Enrollment < ActiveRecord::Base
 
   def self.cross_shard_invitations?
     false
+  end
+
+  def role
+    self.role_name || self.type
   end
 end

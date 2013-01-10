@@ -25,10 +25,12 @@ class AssignmentOverride < ActiveRecord::Base
   attr_accessible
 
   belongs_to :assignment
+  belongs_to :quiz
   belongs_to :set, :polymorphic => true
   has_many :assignment_override_students, :dependent => :destroy
 
-  validates_presence_of :assignment, :assignment_version, :title
+  validates_presence_of :assignment_version, :if => :assignment
+  validates_presence_of :title
   validates_inclusion_of :set_type, :in => %w(CourseSection Group ADHOC)
   validates_length_of :title, :maximum => maximum_string_length, :allow_nil => true
 
@@ -53,6 +55,12 @@ class AssignmentOverride < ActiveRecord::Base
     end
   end
 
+  validate do |record|
+    if [record.assignment, record.quiz].all?(&:nil?)
+      record.errors.add :base, "assignment or quiz required"
+    end
+  end
+
   workflow do
     state :active
     state :deleted
@@ -72,7 +80,17 @@ class AssignmentOverride < ActiveRecord::Base
   before_validation :default_values
   def default_values
     self.set_type ||= 'ADHOC'
-    self.assignment_version = assignment.version_number if assignment
+    
+    if assignment
+      self.assignment_version = assignment.version_number
+      self.quiz = assignment.quiz
+      self.quiz_version = quiz.version_number if quiz
+    elsif quiz
+      self.quiz_version = quiz.version_number
+      self.assignment = quiz.assignment
+      self.assignment_version = assignment.version_number if assignment
+    end
+
     self.title = set.name if set_type != 'ADHOC' && set
   end
   protected :default_values
@@ -139,12 +157,61 @@ class AssignmentOverride < ActiveRecord::Base
     write_attribute(:all_day_date, new_all_day_date)
   end
 
+
   def as_hash
     { :title => title,
       :due_at => due_at,
       :all_day => all_day,
       :all_day_date => all_day_date,
       :override => self }
+  end
+
+  def applies_to_students
+    # FIXME: exclude students for whom this override does not apply
+    # because a higher-priority override exists
+    case set_type
+    when 'ADHOC'
+      set
+    when 'CourseSection'
+      set.participating_students
+    when 'Group'
+      set.participants
+    end
+  end
+
+  def applies_to_admins
+    case set_type
+    when 'CourseSection'
+      set.participating_admins
+    else
+      assignment.context.participating_admins
+    end
+  end
+
+  def notify_change?
+    self.assignment and
+    self.assignment.context.state == :available and
+    (self.assignment.workflow_state == 'available' || self.assignment.workflow_state == 'published') and
+    self.assignment.created_at < 3.hours.ago and
+    (!self.prior_version ||
+      self.workflow_state != self.prior_version.workflow_state ||
+      self.due_at_overridden != self.prior_version.due_at_overridden ||
+      self.due_at_overridden && !Assignment.due_dates_equal?(self.due_at, self.prior_version.due_at))
+  end
+
+  has_a_broadcast_policy
+  set_broadcast_policy do |p|
+    p.dispatch :assignment_due_date_changed
+    p.to { applies_to_students }
+    p.whenever { |record| record.notify_change? }
+    p.filter_asset_by_recipient { |record, user|
+      # note that our asset for this message is an Assignment, not an AssignmentOverride
+      record.assignment.overridden_for(user)
+    }
+
+    p.dispatch :assignment_due_date_override_changed
+    p.to { applies_to_admins }
+    p.whenever { |record| record.notify_change? }
   end
 
   named_scope :visible_to, lambda{ |admin, course|

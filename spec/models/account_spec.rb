@@ -336,6 +336,15 @@ describe Account do
     end
   end
 
+  context "closest_turnitin_pledge" do
+    it "should find a custom pledge in a root account from a sub account" do
+      pledge = "custom yo"
+      root_account = Account.create(:turnitin_pledge => pledge)
+      sub_account = Account.create(:parent_account => root_account)
+      sub_account.closest_turnitin_pledge.should == pledge
+    end
+  end
+
   it "should make a default enrollment term if necessary" do
     a = Account.create!(:name => "nada")
     a.enrollment_terms.size.should == 1
@@ -347,7 +356,10 @@ describe Account do
   end
 
   def account_with_admin_and_restricted_user(account)
-    account.add_account_membership_type('Restricted Admin')
+    role = account.roles.build(:name => 'Restricted Admin')
+    role.base_role_type = AccountUser::BASE_ROLE_NAME
+    role.workflow_state = 'active'
+    role.save!
     admin = User.create
     user = User.create
     account.account_users.create(:user => admin, :membership_type => 'AccountAdmin')
@@ -385,9 +397,11 @@ describe Account do
     end
 
     limited_access = [ :read, :manage, :update, :delete, :read_outcomes ]
-    full_access = RoleOverride.permissions.map { |k, v| k } + limited_access
+    full_access = RoleOverride.permissions.keys + limited_access
     index = full_access.index(:manage_courses)
     full_access = full_access[0..index] + [:create_courses] + full_access[index+1..-1]
+    full_root_access = full_access - RoleOverride.permissions.select { |k, v| v[:account_only] == :site_admin }.map(&:first)
+    full_sub_access = full_root_access - RoleOverride.permissions.select { |k, v| v[:account_only] == :root }.map(&:first)
     # site admin has access to everything everywhere
     hash.each do |k, v|
       account = v[:account]
@@ -402,7 +416,7 @@ describe Account do
     hash.each do |k, v|
       next if k == :site_admin
       account = v[:account]
-      account.check_policy(hash[:root][:admin]).should == full_access
+      account.check_policy(hash[:root][:admin]).should == full_root_access
       account.check_policy(hash[:root][:user]).should == limited_access
     end
 
@@ -416,7 +430,7 @@ describe Account do
     hash.each do |k, v|
       next if k == :site_admin || k == :root
       account = v[:account]
-      account.check_policy(hash[:sub][:admin]).should == full_access
+      account.check_policy(hash[:sub][:admin]).should == full_sub_access
       account.check_policy(hash[:sub][:user]).should == limited_access
     end
 
@@ -439,7 +453,7 @@ describe Account do
     hash.each do |k, v|
       next if k == :site_admin
       account = v[:account]
-      account.check_policy(hash[:root][:admin]).should == full_access
+      account.check_policy(hash[:root][:admin]).should == full_root_access
       account.check_policy(hash[:root][:user]).should == some_access
     end
 
@@ -453,7 +467,7 @@ describe Account do
     hash.each do |k, v|
       next if k == :site_admin || k == :root
       account = v[:account]
-      account.check_policy(hash[:sub][:admin]).should == full_access
+      account.check_policy(hash[:sub][:admin]).should == full_sub_access
       account.check_policy(hash[:sub][:user]).should == some_access
     end
   end
@@ -839,6 +853,45 @@ describe Account do
         sa = Account.find(sa)
         sa.account_users_for(@user).should == []
       end
+    end
+  end
+
+  describe "available_course_roles_by_name" do
+    before do
+      account_model
+      @roleA = @account.roles.create :name => 'A'
+      @roleA.base_role_type = 'StudentEnrollment'
+      @roleA.save!
+      @roleB = @account.roles.create :name => 'B'
+      @roleB.base_role_type = 'StudentEnrollment'
+      @roleB.save!
+      @sub_account = @account.sub_accounts.create!
+      @roleBsub = @sub_account.roles.create :name => 'B'
+      @roleBsub.base_role_type = 'StudentEnrollment'
+      @roleBsub.save!
+    end
+
+    it "should return roles indexed by name" do
+      @account.available_course_roles_by_name.should == { 'A' => @roleA, 'B' => @roleB }
+    end
+
+    it "should not return inactive roles" do
+      @roleB.deactivate!
+      @account.available_course_roles_by_name.should == { 'A' => @roleA }
+    end
+
+    it "should not return deleted roles" do
+      @roleA.destroy
+      @account.available_course_roles_by_name.should == { 'B' => @roleB }
+    end
+
+    it "should find the most derived version of each role" do
+      @sub_account.available_course_roles_by_name.should == { 'A' => @roleA, 'B' => @roleBsub }
+    end
+
+    it "should find a base role if the derived version is inactive" do
+      @roleBsub.deactivate!
+      @sub_account.available_course_roles_by_name.should == { 'A' => @roleA, 'B' => @roleB }
     end
   end
 end

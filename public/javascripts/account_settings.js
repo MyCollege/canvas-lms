@@ -78,6 +78,19 @@ define([
         width: 400
       });
     });
+
+    $("#account_settings_enable_scheduler").change(function() {
+      var $enableCalendar2 = $("#account_settings_enable_scheduler");
+      var $showScheduler = $("#show_scheduler_checkbox");
+      if ($enableCalendar2.attr('checked')) {
+        $showScheduler.show();
+      }
+      else {
+        $showScheduler.hide();
+      }
+    });
+    $("#account_settings_enable_scheduler").trigger('change');
+
     $(".open_registration_delegated_warning_link").click(function(event) {
       event.preventDefault();
       $("#open_registration_delegated_warning_dialog").dialog({
@@ -86,6 +99,9 @@ define([
       });
     });
 
+    $('#account_settings_external_notification_warning_checkbox').on('change', function(e) {
+      $('#account_settings_external_notification_warning').val($(this).prop('checked') ? 1 : 0);
+    });
 
     var $blankCustomHelpLink = $('.custom_help_link.blank').detach().removeClass('blank'),
         uniqueCounter = 1000;
@@ -218,7 +234,7 @@ define([
         width: 560
       });
 
-      $('<a class="help" href="#">&nbsp;</a>')
+      $('<a href="#"><i class="icon-question standalone-icon"></i></a>')
         .click(function(event){
           event.preventDefault();
           $dialog.dialog('open');
