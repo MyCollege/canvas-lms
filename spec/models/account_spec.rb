@@ -337,11 +337,25 @@ describe Account do
   end
 
   context "closest_turnitin_pledge" do
-    it "should find a custom pledge in a root account from a sub account" do
-      pledge = "custom yo"
-      root_account = Account.create(:turnitin_pledge => pledge)
-      sub_account = Account.create(:parent_account => root_account)
-      sub_account.closest_turnitin_pledge.should == pledge
+    it "should work for custom sub, custom root" do
+      root_account = Account.create!(:turnitin_pledge => "root")
+      sub_account = Account.create!(:parent_account => root_account, :turnitin_pledge => "sub")
+      root_account.closest_turnitin_pledge.should == "root"
+      sub_account.closest_turnitin_pledge.should == "sub"
+    end
+
+    it "should work for nil sub, custom root" do
+      root_account = Account.create!(:turnitin_pledge => "root")
+      sub_account = Account.create!(:parent_account => root_account)
+      root_account.closest_turnitin_pledge.should == "root"
+      sub_account.closest_turnitin_pledge.should == "root"
+    end
+
+    it "should work for nil sub, nil root" do
+      root_account = Account.create!
+      sub_account = Account.create!(:parent_account => root_account)
+      root_account.closest_turnitin_pledge.should_not be_empty
+      sub_account.closest_turnitin_pledge.should_not be_empty
     end
   end
 
@@ -438,7 +452,9 @@ describe Account do
     some_access = [:read_reports] + limited_access
     hash.each do |k, v|
       account = v[:account]
-      account.role_overrides.create(:permission => 'read_reports', :enrollment_type => 'Restricted Admin', :enabled => true)
+      account.role_overrides.create!(:permission => 'read_reports', :enrollment_type => 'Restricted Admin', :enabled => true)
+      # clear caches
+      v[:account] = Account.find(account)
     end
     RoleOverride.clear_cached_contexts
     hash.each do |k, v|
