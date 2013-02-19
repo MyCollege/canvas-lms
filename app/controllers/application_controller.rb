@@ -32,11 +32,12 @@ class ApplicationController < ActionController::Base
 
   include AuthenticationMethods
   protect_from_forgery
+  # load_user checks masquerading permissions, so this needs to be cleared first
+  before_filter :clear_cached_contexts
   before_filter :load_account, :load_user
   before_filter :check_pending_otp
   before_filter :set_user_id_header
   before_filter :set_time_zone
-  before_filter :clear_cached_contexts
   before_filter :set_page_view
   after_filter :log_page_view
   after_filter :discard_flash_if_xhr
@@ -77,7 +78,7 @@ class ApplicationController < ActionController::Base
     # set some defaults
     @js_env ||= {
       :current_user_id => @current_user.try(:id),
-      :current_user => user_display_json(@current_user),
+      :current_user => user_display_json(@current_user, :profile),
       :current_user_roles => @current_user.try(:roles),
       :context_asset_string => @context.try(:asset_string),
       :AUTHENTICITY_TOKEN => form_authenticity_token,
@@ -437,7 +438,7 @@ class ApplicationController < ActionController::Base
       # the grants_right? check to avoid querying for the various memberships
       # again.
       courses = @context.current_enrollments.select { |e| e.state_based_on_date == :active }.map(&:course).uniq
-      groups = include_groups ? @context.groups.active : []
+      groups = include_groups ? @context.current_groups : []
       if only_contexts.present?
         # find only those courses and groups passed in the only_contexts
         # parameter, but still scoped by user so we know they have rights to
@@ -501,7 +502,7 @@ class ApplicationController < ActionController::Base
       @assignments = @groups.map(&:active_assignments).flatten
     else
       @groups = AssignmentGroup.for_context_codes(@context_codes).active
-      @assignments = Assignment.active.for_context_codes(@context_codes)
+      @assignments = Assignment.active.for_course(@courses.map(&:id))
     end
     @assignment_groups = @groups
 
@@ -1247,6 +1248,15 @@ class ApplicationController < ActionController::Base
   def json_as_text?
     (request.headers['CONTENT_TYPE'].to_s =~ %r{multipart/form-data}) &&
     (params[:format].to_s != 'json' || in_app?)
+  end
+
+  def params_are_integers?(*check_params)
+    begin
+      check_params.each{ |p| Integer(params[p]) }
+    rescue ArgumentError
+      return false
+    end
+    true
   end
 
   def reset_session

@@ -2,7 +2,7 @@ source :rubygems
 
 ONE_NINE = RUBY_VERSION >= "1.9."
 
-gem 'rails',          '2.3.15'
+gem 'rails',          '2.3.17'
 gem 'authlogic',      '2.1.3'
 #gem 'aws-s3',         '0.6.2',  :require => 'aws/s3'
 # use custom gem until pull request at https://github.com/marcel/aws-s3/pull/41
@@ -27,7 +27,7 @@ gem 'highline',       '1.6.1'
 gem 'i18n',           '0.6.0'
 gem 'icalendar',      '1.1.5'
 gem 'jammit',         '0.6.0'
-gem 'json',           '1.5.2'
+gem 'json',           '1.5.5'
 # native xml parsing, diigo
 gem 'libxml-ruby',    '2.3.2',  :require => 'xml/libxml'
 gem 'macaddr',        '1.0.0'  # macaddr 1.2.0 tries to require 'systemu' which isn't a dependency
@@ -88,7 +88,7 @@ end
 
 group :test do
   gem 'bluecloth',    '2.0.10' # for generating api docs
-  gem 'parallelized_specs', '0.3.89'
+  gem 'parallelized_specs', '0.3.98'
   gem 'mocha',        '0.12.3', :require => 'mocha_standalone'
   gem 'rcov',         '0.9.9'
   gem 'rspec',        '1.3.2'
@@ -96,6 +96,7 @@ group :test do
   gem 'selenium-webdriver', '2.27.2'
   gem 'webrat',       '0.7.3'
   gem 'yard',         '0.8.0'
+  gem 'timecop',      '0.5.9.1'
   if ONE_NINE
     gem 'test-unit',  '1.2.3'
   end
