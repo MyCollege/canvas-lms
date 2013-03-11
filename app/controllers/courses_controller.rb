@@ -69,6 +69,16 @@ require 'set'
 #       // returned only if the current user has grading rights
 #       // and include[]=needs_grading_count
 #       needs_grading_count: '17'
+#
+#       // optional: the name of the enrollment term for the course
+#       // returned only if include[]=term
+#       term: {
+#         id: 1,
+#         name: 'Default Term',
+#         start_at: "2012-06-01T00:00:00-06:00",
+#         end_at: null
+#       }
+#
 #   }
 class CoursesController < ApplicationController
   include SearchHelper
@@ -112,6 +122,10 @@ class CoursesController < ApplicationController
   #   a score of 0. calculated_final_grade is the letter grade equivalent of
   #   calculated_final_score (if available). This argument is ignored if the
   #   course is configured to hide final grades.
+  #
+  # @argument include[] ["term"] Optional information to include with each Course.
+  #   When term is given, the information for the enrollment term for each course
+  #   is returned.
   #
   # @returns [Course]
   def index
@@ -548,6 +562,7 @@ class CoursesController < ApplicationController
   #   {
   #     "allow_student_discussion_topics": true,
   #     "allow_student_forum_attachments": false,
+  #     "allow_student_discussion_editing": true
   #   }
   include Api::V1::Course
   def settings
@@ -589,6 +604,7 @@ class CoursesController < ApplicationController
   #
   # - `allow_student_discussion_topics` (true|false)
   # - `allow_student_forum_attachments` (true|false)
+  # - `allow_student_discussion_editing` (true|false)
   #
   # @example_request
   #   curl https://<canvas>/api/v1/courses/<course_id>/settings \ 
@@ -599,14 +615,11 @@ class CoursesController < ApplicationController
     return unless api_request?
     @course = api_find(Course, params[:course_id])
     return unless authorized_action(@course, @current_user, :update)
-    bool_settings = [ :allow_student_discussion_topics,
-                      :allow_student_forum_attachments ]
-    bool_settings.each do |setting|
-      unless params[setting].nil?
-        @course.send("#{setting}=", value_to_boolean(params[setting]))
-      end
-    end
-    @course.save
+    @course.update_attributes params.slice(
+      :allow_student_discussion_topics,
+      :allow_student_forum_attachments,
+      :allow_student_discussion_editing
+    )
     render :json => course_settings_json(@course)
   end
 
@@ -967,7 +980,7 @@ class CoursesController < ApplicationController
         get_sorted_assignments
       when 'modules'
         add_crumb(t('#crumbs.modules', "Modules"))
-        @modules = @context.context_modules.active
+        @modules = @context.modules_visible_to(@current_user)
         @collapsed_modules = ContextModuleProgression.for_user(@current_user).for_modules(@modules).scoped(:select => 'context_module_id, collapsed').select{|p| p.collapsed? }.map(&:context_module_id)
       when 'syllabus'
         add_crumb(t('#crumbs.syllabus', "Syllabus"))
@@ -1295,10 +1308,16 @@ class CoursesController < ApplicationController
           end
         end
       end
-      unless (hide_final_grades = params[:course].delete(:hide_final_grades)).nil?
-        @course.hide_final_grades = value_to_boolean(hide_final_grades)
-      end
       params[:course][:event] = :offer if params[:offer].present?
+
+      lock_announcements = params[:course].delete(:lock_all_announcements)
+      if value_to_boolean(lock_announcements)
+        @course.lock_all_announcements = true
+        Announcement.update_all(['workflow_state = ?', 'locked'],
+          :context_type => 'Course', :context_id => @course.id, :workflow_state => 'active')
+      elsif @course.lock_all_announcements
+        @course.lock_all_announcements = false
+      end
 
       @course.process_event(params[:course].delete(:event)) if params[:course][:event] && @course.grants_right?(@current_user, session, :change_course_state)
       params[:course][:conclude_at] = params[:course].delete(:end_at) if api_request? && params[:course].has_key?(:end_at)
