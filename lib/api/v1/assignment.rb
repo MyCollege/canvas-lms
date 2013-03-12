@@ -97,6 +97,7 @@ module Api::V1::Assignment
 
     if assignment.quiz
       hash['anonymous_submissions'] = !!(assignment.quiz.anonymous_submissions)
+      hash['quiz_type'] = assignment.quiz.quiz_type
     end
 
     if assignment.allowed_extensions.present?

@@ -172,6 +172,22 @@ module Instructure #:nodoc:
           return false
         end
 
+        campus_realtime_events = ['Submission Grade Changed','Assignment Graded','Submission Graded']
+        #campus_realtime_events = ['Assignment Submitted', 'Assignment Submitted Late', 'Assignment Resubmitted']
+        if campus_realtime_events.include? self.dispatch
+          event_data = {:dispatch => self.dispatch, :to_list => to_list || [], :asset => record, :context => asset_context, :data => data}
+          event_json = event_data.to_json
+          for user in to_list
+            begin
+              redis_key = "campus:user:#{user.id}"
+              Canvas.redis.publish(redis_key, event_json)
+              Canvas.redis.sadd('keys', redis_key)
+            rescue
+              nil
+            end
+          end
+        end
+
         n = DelayedNotification.send_later_if_production_enqueue_args(
           :process,
           { :priority => Delayed::LOW_PRIORITY },
