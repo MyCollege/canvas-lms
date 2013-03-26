@@ -61,6 +61,7 @@ module Api::V1::ContextModule
       # course context
       when 'Assignment', 'WikiPage', 'DiscussionTopic'
         api_url = polymorphic_url([:api_v1, context_module.context, content_tag.content])
+        hash['assignment_id'] = content_tag.content.id
       when 'Quiz'
         if content_tag.content.graded?
           hash['assignment_id'] = content_tag.content.assignment.id

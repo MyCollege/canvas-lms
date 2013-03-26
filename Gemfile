@@ -71,6 +71,7 @@ gem 'xml-simple',     '1.0.12', :require => 'xmlsimple'
 gem 'yui-compressor', '0.9.4'
 gem 'foreigner',      '0.9.2'
 gem 'crocodoc-ruby',  '0.0.1', :require => 'crocodoc'
+gem 'bunny',          '0.9.0.pre8'
 
 group :assets do
   gem 'compass-rails', '1.0.2'

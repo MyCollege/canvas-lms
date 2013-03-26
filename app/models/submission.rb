@@ -580,6 +580,7 @@ class Submission < ActiveRecord::Base
   set_broadcast_policy do |p|
     p.dispatch :assignment_submitted_late
     p.to { assignment.context.instructors_in_charge_of(user_id) }
+    p.students { student }
     p.whenever {|record| 
       !record.suppress_broadcast and
       !record.group_broadcast_submission and
@@ -592,6 +593,7 @@ class Submission < ActiveRecord::Base
 
     p.dispatch :assignment_submitted
     p.to { assignment.context.instructors_in_charge_of(user_id) }
+    p.students { student }
     p.whenever {|record| 
       !record.suppress_broadcast and
       record.assignment.context.state == :available and
@@ -604,6 +606,7 @@ class Submission < ActiveRecord::Base
 
     p.dispatch :assignment_resubmitted
     p.to { assignment.context.instructors_in_charge_of(user_id) }
+    p.students { student }
     p.whenever {|record| 
       !record.suppress_broadcast and
       record.assignment.context.state == :available and
@@ -617,6 +620,7 @@ class Submission < ActiveRecord::Base
 
     p.dispatch :group_assignment_submitted_late
     p.to { assignment.context.instructors_in_charge_of(user_id) }
+    p.students { student }
     p.whenever {|record| 
       !record.suppress_broadcast and
       record.group_broadcast_submission and
@@ -628,6 +632,7 @@ class Submission < ActiveRecord::Base
 
     p.dispatch :submission_graded
     p.to { student }
+    p.students { student }
     p.whenever {|record|
       !record.suppress_broadcast and
       !record.assignment.muted? and
@@ -639,6 +644,7 @@ class Submission < ActiveRecord::Base
     
     p.dispatch :submission_grade_changed
     p.to { student }
+    p.students { student }
     p.whenever {|record|
       !record.suppress_broadcast and
       !record.assignment.muted? and

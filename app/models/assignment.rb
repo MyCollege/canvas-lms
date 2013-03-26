@@ -479,6 +479,7 @@ class Assignment < ActiveRecord::Base
 
     p.dispatch :assignment_graded
     p.to { @students_whose_grade_just_changed }
+    p.students { @students_whose_grade_just_changed }
     p.whenever {|record|
       !self.suppress_broadcast and
       !record.muted? and
@@ -489,6 +490,7 @@ class Assignment < ActiveRecord::Base
 
     p.dispatch :assignment_graded
     p.to { participants }
+    p.students { participants }
     p.whenever {|record|
       !self.suppress_broadcast and
       !record.muted? and

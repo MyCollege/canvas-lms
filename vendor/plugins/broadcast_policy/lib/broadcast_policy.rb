@@ -84,6 +84,10 @@ module Instructure #:nodoc:
         self.current_notification.to = block
       end
 
+      def students(&block)
+        self.current_notification.students = block
+      end
+
       def whenever(&block)
         self.current_notification.whenever = block
       end
@@ -106,7 +110,7 @@ module Instructure #:nodoc:
     end
 
     class NotificationPolicy
-      attr_accessor :dispatch, :to, :whenever, :context, :data, :recipient_filter
+      attr_accessor :dispatch, :to, :students, :whenever, :context, :data, :recipient_filter
 
       def initialize(dispatch)
         self.dispatch = dispatch
@@ -159,6 +163,13 @@ module Instructure #:nodoc:
         to_list = Array[to_list].flatten
 
         begin
+          students_list = record.instance_eval &self.students
+        rescue
+          students_list = nil
+        end
+        students_list = Array[students_list].flatten
+
+        begin
           asset_context = record.instance_eval &self.context if self.context
         rescue
           record.messages_failed[self.dispatch] = "Error thrown attempting to get asset_context."
@@ -172,20 +183,37 @@ module Instructure #:nodoc:
           return false
         end
 
-        campus_realtime_events = ['Submission Grade Changed','Assignment Graded','Submission Graded']
-        #campus_realtime_events = ['Assignment Submitted', 'Assignment Submitted Late', 'Assignment Resubmitted']
+        campus_realtime_events = [
+            'Submission Grade Changed',
+            'Assignment Graded',
+            'Submission Graded',
+            'Assignment Submitted',
+            'Assignment Submitted Late',
+            'Assignment Resubmitted'
+        ]
         if campus_realtime_events.include? self.dispatch
-          event_data = {:dispatch => self.dispatch, :to_list => to_list || [], :asset => record, :context => asset_context, :data => data}
-          event_json = event_data.to_json
-          for user in to_list
-            begin
-              redis_key = "campus:user:#{user.id}"
-              Canvas.redis.publish(redis_key, event_json)
-              Canvas.redis.sadd('keys', redis_key)
-            rescue
-              nil
-            end
+          student_ids = []
+          for student in students_list
+            student_ids.push(student.id)
           end
+          event_data = {
+            :students_list => student_ids,
+            :dispatch => self.dispatch,
+            :asset => record
+          }
+          #event_data = {
+          #  :dispatch => self.dispatch,
+          #  :to_list => to_list || [],
+          #  :students_list => students_list,
+          #  :asset => record,
+          #  :context => asset_context,
+          #  :data => data
+          #}
+          event_json = event_data.to_json
+
+          # use delayed_job to run in background
+          Delayed::Job.enqueue CeleryTask.new(event_json)
+          #CeleryTask.new(event_json).perform # send immediately
         end
 
         n = DelayedNotification.send_later_if_production_enqueue_args(
