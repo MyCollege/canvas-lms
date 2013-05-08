@@ -123,16 +123,6 @@ describe UsersController do
       response.body.should match /Olds, JT.*St\. Clair, John/m
     end
 
-    it "should not show student view student in a course context" do
-      course_with_teacher_logged_in(:active_all => true)
-      @fake_student = @course.student_view_student
-
-      get course_users_url @course.id
-      body = Nokogiri::HTML(response.body)
-      body.css("#user_#{@fake_student.id}").should be_empty
-      body.at_css('.student_roster').text.should_not match(/Test Student/)
-    end
-
     it "should not show any student view students at the account level" do
       course_with_teacher(:active_all => true)
       @fake_student = @course.student_view_student
@@ -161,6 +151,30 @@ describe UsersController do
       student_in_course(:course => @course)
       get "/users/#{@student.id}"
       response.status.should == "401 Unauthorized"
+    end
+
+    it "should show user to account users that have the view_statistics permission" do
+      account_model
+      student_in_course(:account => @account)
+      RoleOverride.create!(:context => @account, :permission => 'view_statistics',
+                           :enrollment_type => 'AccountMembership', :enabled => true)
+      @account.add_user(user, 'AccountMembership')
+      user_session(@user)
+
+      get "/users/#{@student.id}"
+      response.should be_success
+    end
+
+    it "should show course user to account users that have the read_roster permission" do
+      account_model
+      student_in_course(:account => @account)
+      RoleOverride.create!(:context => @account, :permission => 'read_roster',
+                           :enrollment_type => 'AccountMembership', :enabled => true)
+      @account.add_user(user, 'AccountMembership')
+      user_session(@user)
+
+      get "/courses/#{@course.id}/users/#{@student.id}"
+      response.should be_success
     end
   end
 

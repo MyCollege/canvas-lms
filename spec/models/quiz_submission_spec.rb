@@ -26,11 +26,11 @@ describe QuizSubmission do
   end
 
   it "should copy the quiz's points_possible whenever it's saved" do
-    Quiz.update_all("points_possible = 1.1", "id = #{@quiz.id}")
+    Quiz.where(:id => @quiz).update_all(:points_possible => 1.1)
     q = @quiz.quiz_submissions.create!
     q.reload.quiz_points_possible.should eql 1.1
 
-    Quiz.update_all("points_possible = 1.9", "id = #{@quiz.id}")
+    Quiz.where(:id => @quiz).update_all(:points_possible => 1.9)
     q.reload.quiz_points_possible.should eql 1.1
 
     q.save!
@@ -1393,5 +1393,51 @@ describe QuizSubmission do
         submission.question_answered?(100).should be_false
       end
     end
+  end
+
+  describe "update_submission_version" do
+    let(:submission) { QuizSubmission.new }
+
+    before do
+      submission.with_versioning(true) do |s|
+        s.score = 10
+        s.save_without_validation
+      end
+      submission.version_number.should == 1
+
+      submission.with_versioning(true) do |s|
+        s.score = 15
+        s.save_without_validation
+      end
+      submission.version_number.should == 2
+    end
+
+    it "updates a previous version given current attributes" do
+      vs = submission.versions
+      vs.size.should == 2
+
+      submission.score = 25
+      submission.update_submission_version(vs.last, [:score])
+      submission.versions.map{ |s| s.model.score }.should == [15, 25]
+    end
+
+    context "when loading UTF-8 data" do
+      it "should strip bad chars" do
+        pending("1.9 only") if RUBY_VERSION < "1.9"
+        
+        vs = submission.versions
+
+        # inject bad byte into yaml
+        submission.submission_data = ["bad\x81byte"]
+        submission.update_submission_version(vs.last, [:submission_data])
+
+        # reload yaml by setting a different column
+        submission.score = 20
+        submission.update_submission_version(vs.last, [:score])
+
+        submission.versions.map{ |s| s.model.submission_data }.should == [nil, ["badbyte"]]
+      end
+    end
+
   end
 end

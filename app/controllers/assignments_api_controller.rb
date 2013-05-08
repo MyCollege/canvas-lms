@@ -158,6 +158,9 @@
 #       // (Optional) explanation of lock status
 #       lock_explanation: "This assignment is locked until September 1 at 12:00am",
 #
+#       // (Optional) id of the associated quiz (applies only when submission_types is ["online_quiz"])
+#       quiz_id: 620,
+#
 #       // (Optional) whether anonymous submissions are accepted (applies only to quiz assignments)
 #       anonymous_submissions: false,
 #
@@ -251,9 +254,9 @@ class AssignmentsApiController < ApplicationController
   # @returns [Assignment]
   def index
     if authorized_action(@context, @current_user, :read)
-      @assignments = @context.active_assignments.find(:all,
-          :include => [:assignment_group, :rubric_association, :rubric],
-          :order => "assignment_groups.position, assignments.position")
+      @assignments = @context.active_assignments.
+          includes(:assignment_group, :rubric_association, :rubric).
+          reorder("assignment_groups.position, assignments.position")
 
       hashes = @assignments.map { |assignment|
         assignment_json(assignment, @current_user, session) }
@@ -302,10 +305,9 @@ class AssignmentsApiController < ApplicationController
   #   allowed submission types:
   #
   #     "online_upload"
-  #     "online_media_recording"
   #     "online_text_entry"
   #     "online_url"
-  #     "online_media_recording" Only valid when the Kaltura plugin is enabled.
+  #     "media_recording" (Only valid when the Kaltura plugin is enabled)
   #
   # @argument assignment[allowed_extensions] [Array]
   #   Allowed extensions if submission_types includes "online_upload"

@@ -10,6 +10,8 @@ define [
   'compiled/views/assignments/TurnitinSettingsDialog'
   'compiled/fn/preventDefault'
   'compiled/views/calendar/MissingDateDialogView'
+  'compiled/views/assignments/AssignmentGroupSelector'
+  'compiled/views/assignments/GroupCategorySelector'
   'compiled/tinymce'
   'tinymce.editor_box'
   'jqueryui/dialog'
@@ -18,7 +20,7 @@ define [
   'compiled/jquery/toggleAccessibly',
 ], (INST, I18n, ValidatedFormView, _, $, wikiSidebar, template,
 TurnitinSettings, TurnitinSettingsDialog, preventDefault, MissingDateDialog,
-toggleAccessibly) ->
+AssignmentGroupSelector, GroupCategorySelector, toggleAccessibly) ->
 
   class EditView extends ValidatedFormView
 
@@ -151,6 +153,7 @@ toggleAccessibly) ->
 
     handleGradingTypeChange: (gradingType) =>
       @$gradedAssignmentFields.toggleAccessibly gradingType != 'not_graded'
+      @handleSubmissionTypeChange(null)
 
     handleSubmissionTypeChange: (ev) =>
       subVal = @$submissionType.val()
@@ -199,6 +202,7 @@ toggleAccessibly) ->
         data.lock_at = defaultDates?.get('lock_at') or null
         data.unlock_at = defaultDates?.get('unlock_at') or null
         data.due_at = defaultDates?.get('due_at') or null
+        data.assignment_overrides = @dueDateOverrideView.getOverrides()
       return data
 
     submit: (event) =>
@@ -245,8 +249,18 @@ toggleAccessibly) ->
 
     # -- Pre-Save Validations --
 
-    fieldSelectors:
-      assignmentToggleAdvancedOptions: '#assignment_toggle_advanced_options'
+    fieldSelectors: _.extend(
+      { assignmentToggleAdvancedOptions: '#assignment_toggle_advanced_options'},
+      AssignmentGroupSelector::fieldSelectors,
+      GroupCategorySelector::fieldSelectors
+    )
+
+    showErrors: (errors) ->
+      # override view handles displaying override errors, remove them
+      # before calling super
+      # see getFormValues in DueDateView.coffee
+      delete errors.assignmentOverrides
+      super(errors)
 
     validateBeforeSave: (data, errors) =>
       errors = @_validateTitle data, errors
@@ -256,6 +270,9 @@ toggleAccessibly) ->
       unless ENV?.IS_LARGE_ROSTER
         errors = @groupCategorySelector.validateBeforeSave(data, errors)
       errors = @_validateAdvancedOptions(data, errors)
+      data2 =
+        assignment_overrides: @dueDateOverrideView.getAllDates(data)
+      errors = @dueDateOverrideView.validateBeforeSave(data2,errors)
       errors
 
     _validateTitle: (data, errors) =>

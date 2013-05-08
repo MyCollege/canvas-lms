@@ -17,6 +17,7 @@
  */
 define([
   'i18n!quizzes',
+  'underscore',
   'jquery' /* $ */,
   'calcCmd',
   'str/htmlEscape',
@@ -47,7 +48,7 @@ define([
   'vendor/jquery.scrollTo' /* /\.scrollTo/ */,
   'jqueryui/sortable' /* /\.sortable/ */,
   'jqueryui/tabs' /* /\.tabs/ */
-], function(I18n,$, calcCmd, htmlEscape, pluralize, wikiSidebar,
+], function(I18n,_,$,calcCmd, htmlEscape, pluralize, wikiSidebar,
             DueDateListView, DueDateOverrideView, Quiz, DueDateList,SectionList,
             MissingDateDialog,MultipleChoiceToggle,TextHelper){
 
@@ -979,9 +980,8 @@ define([
 
   function generateFormQuiz(quiz) {
     var data = {};
-    var quizAssignmentId = quizAssignmentId || null;
-    if (quizAssignmentId) {
-      data['quiz[assignment_id]'] = quizAssignmentId;
+    if (ENV.ASSIGNMENT_ID) {
+      data['quiz[assignment_id]'] = ENV.ASSIGNMENT_ID;
     }
     data['quiz[title]'] = quiz.quiz_name;
     for(var idx in quiz.questions) {
@@ -1259,7 +1259,21 @@ define([
         data.allowed_attempts = attempts;
         data['quiz[allowed_attempts]'] = attempts;
         overrideView.updateOverrides();
-        if (overrideView.containsSectionsWithoutOverrides() && !hasCheckedOverrides) {
+        var overrides = overrideView.getOverrides();
+        var quizData = overrideView.getDefaultDueDate();
+        if (quizData) {
+          quizData = quizData.toJSON().assignment_override;
+        } else {
+          quizData = {};
+        }
+        var validationData = {
+          assignment_overrides: overrideView.getAllDates(quizData)
+        };
+        var errs = overrideView.validateBeforeSave(validationData,{});
+        if (_.keys(errs).length > 0) {
+          return false;
+        }
+        else if (overrideView.containsSectionsWithoutOverrides() && !hasCheckedOverrides) {
           sections = overrideView.sectionsWithoutOverrides();
           var missingDateView = new MissingDateDialog({
             validationFn: function(){ return sections },
@@ -1290,7 +1304,6 @@ define([
             data['quiz[unlock_at]'] = "";
             data['quiz[lock_at]'] = "";
           }
-          var overrides = overrideView.getOverrides();
           adjustOverridesForFormParams(overrides);
           if (overrides.length === 0) { overrides = false; }
           data['quiz[assignment_overrides]'] = overrides;
@@ -2594,6 +2607,15 @@ define([
     });
 
     $("#equations_dialog_tabs").tabs();
+
+    $(".delete_quiz_link").click(function(event) {
+      event.preventDefault();
+      $(this).parents(".quiz").confirmDelete({
+        message: I18n.t('confirms.delete_quiz', "Are you sure you want to delete this quiz?"),
+        url: $(this).attr('href'),
+        success: function() { window.location.replace(ENV.QUIZZES_URL); }
+      });
+    });
   });
 
   $.fn.multipleAnswerSetsQuestion = function() {

@@ -96,6 +96,7 @@ module Api::V1::Assignment
     end
 
     if assignment.quiz
+      hash['quiz_id'] = assignment.quiz.id
       hash['anonymous_submissions'] = !!(assignment.quiz.anonymous_submissions)
       hash['quiz_type'] = assignment.quiz.quiz_type
     end
@@ -177,7 +178,6 @@ module Api::V1::Assignment
     automatic_peer_reviews
     external_tool_tag_attributes
     grade_group_students_individually
-    set_custom_field_values
     turnitin_enabled
     turnitin_settings
     grading_standard_id
@@ -230,6 +230,10 @@ module Api::V1::Assignment
     end
 
     if update_params["submission_types"].is_a? Array
+      update_params["submission_types"] = update_params["submission_types"].map do |type|
+        # TODO: remove. this was temporary backward support for a hotfix
+        type == "online_media_recording" ? "media_recording" : type
+      end
       update_params["submission_types"] = update_params["submission_types"].join(',')
     end
 

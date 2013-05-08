@@ -20,9 +20,9 @@ shared_examples_for "conversations selenium tests" do
       keep_trying_until { fj("#create_message_form form:visible") }
     else
       f("#action_compose_message").click
+      wait_for_ajaximations
     end
 
-    wait_for_dom_ready
 
     @input = fj("#create_message_form input:visible")
     @browser = fj("#create_message_form .browser:visible")
@@ -33,7 +33,8 @@ shared_examples_for "conversations selenium tests" do
   def add_recipient(search, input_selector=".recipients")
     input = driver.execute_script("return $('#{input_selector}').data('token_input').$input[0]")
     input.send_keys(search)
-    keep_trying_until { driver.execute_script("return $('#{input_selector}').data('token_input').selector.lastSearch") == search }
+    keep_trying_until { driver.execute_script("return $('#{input_selector}').data('token_input').selector.list.query.search") == search }
+    wait_for_ajaximations
     input.send_keys(:return)
   end
 
@@ -105,15 +106,17 @@ shared_examples_for "conversations selenium tests" do
 
   def search(text, input_selector=".recipients")
     @input.send_keys(text)
-    keep_trying_until { driver.execute_script("return $('#{input_selector}').data('token_input').selector.lastSearch") == text }
+    keep_trying_until { driver.execute_script("return $('#{input_selector}').data('token_input').selector.list.query.search") == text }
+    wait_for_ajaximations
     @elements = nil
     yield
     @elements = nil
     if input_selector == ".recipients"
       @input.send_keys(*@input.attribute('value').size.times.map { :backspace })
       keep_trying_until do
-        driver.execute_script("return $('.autocomplete_menu:visible').toArray();").size == 0 || driver.execute_script("return $('#{input_selector}').data('token_input').selector.lastSearch") == ''
+        driver.execute_script("return $('.autocomplete_menu:visible').toArray();").size == 0 || driver.execute_script("return $('#{input_selector}').data('token_input').selector.list.query.search") == ''
       end
+      wait_for_ajaximations
     end
   end
 
@@ -122,6 +125,7 @@ shared_examples_for "conversations selenium tests" do
     opts[:attachments] ||= []
     opts[:add_recipient] = true unless opts.has_key?(:add_recipient)
     opts[:group_conversation] = true unless opts.has_key?(:group_conversation)
+    opts[:existing_conversation] = false unless opts.has_key?(:existing_conversation)
 
     if opts[:add_recipient] && browser = fj("#create_message_form .browser:visible")
       browser.click
@@ -165,7 +169,12 @@ shared_examples_for "conversations selenium tests" do
 
     if opts[:group_conversation]
       message = ConversationMessage.last
-      f("#message_#{message.id}").should_not be_nil
+      # whether the message should be visible depends on whether we were appending to an already visible conversation
+      if opts[:existing_conversation]
+        f("#message_#{message.id}").should_not be_nil
+      else
+        f("#message_#{message.id}").should be_nil
+      end
       message
     end
   end

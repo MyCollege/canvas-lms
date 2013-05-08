@@ -1,4 +1,5 @@
 define [
+  'compiled/util/enrollmentName'
   'vendor/handlebars.vm'
   'i18nObj'
   'jquery'
@@ -8,10 +9,11 @@ define [
   'compiled/util/dateSelect'
   'compiled/util/mimeClass'
   'compiled/str/convertApiUserContent'
+  'compiled/str/TextHelper'
   'jquery.instructure_date_and_time'
   'jquery.instructure_misc_helpers'
   'jquery.instructure_misc_plugins'
-], (Handlebars, I18n, $, _, htmlEscape, semanticDateRange, dateSelect, mimeClass, convertApiUserContent) ->
+], (enrollmentName, Handlebars, I18n, $, _, htmlEscape, semanticDateRange, dateSelect, mimeClass, convertApiUserContent, textHelper) ->
 
   Handlebars.registerHelper name, fn for name, fn of {
     t : (key, defaultValue, options) ->
@@ -21,6 +23,7 @@ define [
         wrappers[new Array(parseInt(key.replace('w', '')) + 2).join('*')] = value
         delete options[key]
       options.wrapper = wrappers if wrappers['*']
+      options.needsEscaping = true
       options = $.extend(options, this) unless this instanceof String or typeof this is 'string'
       I18n.scoped(options.scope).t(key, defaultValue, options)
 
@@ -289,5 +292,11 @@ define [
         'disabled'
       else
         ''
+
+    truncate: ( string, max ) ->
+      return textHelper.truncateText( string, { max: max } )
+
+
+    enrollmentName: enrollmentName
   }
   return Handlebars

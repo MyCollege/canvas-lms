@@ -460,7 +460,7 @@ class AssessmentQuestion < ActiveRecord::Base
     end
     if migration.to_import('assessment_questions') != false || (to_import && !to_import.empty?)
 
-      questions_to_update = migration.context.assessment_questions.scoped(:conditions => {:migration_id => questions.collect{|q| q['migration_id']}})
+      questions_to_update = migration.context.assessment_questions.where(:migration_id => questions.collect{|q| q['migration_id']})
       questions_to_update.each do |question_to_update|
         questions.find{|q| q['migration_id'].eql?(question_to_update.migration_id)}['assessment_question_id'] = question_to_update.id
       end
@@ -483,6 +483,10 @@ class AssessmentQuestion < ActiveRecord::Base
             bank = migration.context.assessment_question_banks.new
             bank.title = question[:question_bank_name]
             bank.migration_id = question[:question_bank_id]
+            bank.save!
+          end
+          if bank.workflow_state == 'deleted'
+            bank.workflow_state = 'active'
             bank.save!
           end
           banks[hash_id] = bank
@@ -522,6 +526,10 @@ class AssessmentQuestion < ActiveRecord::Base
         bank.migration_id = migration_id
         bank.save!
       end
+      if bank.workflow_state == 'deleted'
+        bank.workflow_state = 'active'
+        bank.save!
+      end
     end
     hash.delete(:question_bank_migration_id) if hash.has_key?(:question_bank_migration_id)
     context.imported_migration_items << bank if context.imported_migration_items && !context.imported_migration_items.include?(bank)
@@ -556,7 +564,5 @@ class AssessmentQuestion < ActiveRecord::Base
     hash
   end
   
-  named_scope :active, lambda {
-    {:conditions => ['assessment_questions.workflow_state != ?', 'deleted'] }
-  }
+  scope :active, where("assessment_questions.workflow_state<>'deleted'")
 end

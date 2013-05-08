@@ -186,7 +186,6 @@ class DiscussionTopicsController < ApplicationController
              :GROUP_CATEGORIES => categories.
                                   reject { |category| category.student_organized? }.
                                   map { |category| { :id => category.id, :name => category.name } },
-             :IS_LARGE_ROSTER => @context.respond_to?(:large_roster?) && @context.large_roster?,
              :CONTEXT_ID => @context.id
       render :action => "edit"
     end
@@ -456,7 +455,7 @@ class DiscussionTopicsController < ApplicationController
         end
 
         # handle creating/deleting assignment
-        if params[:assignment]
+        if params[:assignment] && !@topic.root_topic_id?
           if params[:assignment].has_key?(:set_assignment) && !value_to_boolean(params[:assignment][:set_assignment])
             if @topic.assignment && @topic.assignment.grants_right?(@current_user, session, :update)
               assignment = @topic.assignment

@@ -23,6 +23,18 @@ describe Quiz do
     course
   end
 
+  describe ".mark_quiz_edited" do
+    it "should mark a quiz as having unpublished changes" do
+      quiz = @course.quizzes.create! :title => "hello"
+      quiz.published_at = Time.now
+      quiz.publish!
+      quiz.unpublished_changes?.should be_false
+
+      Quiz.mark_quiz_edited(quiz.id)
+      quiz.reload.unpublished_changes?.should be_true
+    end
+  end
+
   describe "#publish!" do
     it "sets the workflow state to available and save!s the quiz" do
       quiz = Quiz.new(:title => "hello")
@@ -286,7 +298,7 @@ describe Quiz do
 
     qq1 = q.quiz_questions.create!(:question_data => { :name => "test 1" }, :quiz_group => g)
     # make sure we handle sorting with nil positions
-    QuizQuestion.update_all({:position => nil}, {:id => qq1.id})
+    QuizQuestion.where(:id => qq1).update_all(:position => nil)
 
     q.quiz_questions.create!(:question_data => { :name => "test 2" }, :quiz_group => g)
     q.quiz_questions.create!(:question_data => { :name => "test 3" })
@@ -592,7 +604,7 @@ describe Quiz do
       qs = q.generate_submission(@student)
 
       stats = q.statistics(false)
-      stats[:submission_count].should == 1
+      stats[:multiple_attempts_exist].should be_false
     end
 
     context 'csv' do

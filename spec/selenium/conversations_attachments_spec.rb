@@ -1,7 +1,7 @@
 require File.expand_path(File.dirname(__FILE__) + '/helpers/conversations_common')
 
 shared_examples_for "conversations attachments selenium tests" do
-  it_should_behave_like "forked server selenium tests"
+  it_should_behave_like "in-process server selenium tests"
   it_should_behave_like "conversations selenium tests"
 
   it "should be able to add an attachment" do
@@ -10,7 +10,7 @@ shared_examples_for "conversations attachments selenium tests" do
 
     new_conversation
     submit_message_form(:attachments => [fullpath])
-    @user.conversations.last.has_attachments.should be_true
+    @user.all_conversations.order("conversation_id DESC").last.has_attachments.should be_true
     @user.conversation_attachments_folder.attachments.count.should == 1
   end
 
@@ -27,7 +27,7 @@ shared_examples_for "conversations attachments selenium tests" do
     ffj(".attachment_list > .attachment:visible").size.should == 1
     ffj(".attachment_list > .attachment:visible .remove_link")[0].click
     submit_message_form
-    @user.conversations.last.has_attachments.should be_false
+    @user.all_conversations.order("conversation_id DESC").last.has_attachments.should be_false
   end
 
   it "should save just one attachment when sending a bulk private message" do
@@ -41,11 +41,10 @@ shared_examples_for "conversations attachments selenium tests" do
     add_recipient("student1")
     add_recipient("student2")
     add_recipient("student3")
-    enable_jobs do
-      expect {
-        submit_message_form(:attachments => [fullpath], :add_recipient => false, :group_conversation => false)
-      }.to change(Attachment, :count).by(1)
-    end
+    ConversationBatch.any_instance.stubs(:mode).returns(:sync)
+    expect {
+      submit_message_form(:attachments => [fullpath], :add_recipient => false, :group_conversation => false)
+    }.to change(Attachment, :count).by(1)
   end
 
   it "should save attachments on new messages on existing conversations" do
@@ -56,8 +55,11 @@ shared_examples_for "conversations attachments selenium tests" do
     submit_message_form
 
     message = submit_message_form(:attachments => [fullpath])
-    message = "#message_#{message.id}"
 
+    expect_new_page_load { get "/conversations/sent" }
+    f(".conversations li").click
+    wait_for_ajaximations
+    message = "#message_#{message.id}"
     ffj("#{message} .message_attachments li").size.should == 1
   end
 
@@ -68,8 +70,12 @@ shared_examples_for "conversations attachments selenium tests" do
 
     new_conversation
     message = submit_message_form(:attachments => [file1[1], file2[1]])
-    message = "#message_#{message.id}"
 
+    expect_new_page_load { get "/conversations/sent" }
+    f(".conversations li").click
+    wait_for_ajaximations
+
+    message = "#message_#{message.id}"
     ffj("#{message} .message_attachments li").size.should == 2
     fj("#{message} .message_attachments li:first a .title").text.should == file1[0]
     fj("#{message} .message_attachments li:last a .title").text.should == file2[0]
@@ -84,6 +90,11 @@ shared_examples_for "conversations attachments selenium tests" do
     new_conversation
     add_recipient('student1')
     submit_message_form(:attachments => [fullpath], :add_recipient => false)
+    wait_for_ajaximations
+
+    expect_new_page_load { get "/conversations/sent" }
+    f(".conversations li").click
+    wait_for_ajaximations
 
     get_messages(false).first.click
     wait_for_animations
@@ -92,11 +103,14 @@ shared_examples_for "conversations attachments selenium tests" do
     add_recipient('student2', '#forward_recipients')
     f('#forward_body').send_keys('ohai look an attachment')
     f('#forward_message_form').submit
-
+    wait_for_ajaximations
+    
+    expect_new_page_load { get "/conversations/sent" }
+    f(".conversations li").click
     wait_for_ajaximations
 
     ff('img.attachments').size.should == 2
-    messages = get_messages(false) # new conversation auto-selected
+    messages = get_messages(false) # conversation already loaded
     messages.size.should == 1
     messages.first.text.should include "ohai look an attachment"
     messages.first.text.should include filename
@@ -105,11 +119,8 @@ end
 
 describe "conversations attachments local tests" do
   it_should_behave_like "conversations attachments selenium tests"
-  prepend_before (:each) do
-    Setting.set("file_storage_test_override", "local")
-  end
-  prepend_before (:all) do
-    Setting.set("file_storage_test_override", "local")
+  before do
+    local_storage!
   end
 
   it "should save attachments on initial messages on new conversations" do
@@ -134,10 +145,7 @@ end
 
 describe "conversations attachments S3 tests" do
   it_should_behave_like "conversations attachments selenium tests"
-  prepend_before (:each) do
-    Setting.set("file_storage_test_override", "s3")
-  end
-  prepend_before (:all) do
-    Setting.set("file_storage_test_override", "s3")
+  before do
+    s3_storage!(:stubs => false)
   end
 end
