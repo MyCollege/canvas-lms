@@ -70,7 +70,7 @@ class ErrorReport < ActiveRecord::Base
     end
 
     def create_error_report(opts)
-      ActiveRecord::Base::ConnectionSpecification.with_environment(nil) do
+      Shackles.activate(:master) do
         report = ErrorReport.new
         report.assign_data(opts)
         begin
@@ -152,7 +152,6 @@ class ErrorReport < ActiveRecord::Base
   USEFUL_ENV = [
     "HTTP_ACCEPT",
     "HTTP_ACCEPT_ENCODING",
-    "HTTP_COOKIE",
     "HTTP_HOST",
     "HTTP_REFERER",
     "HTTP_USER_AGENT",

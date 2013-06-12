@@ -19,26 +19,47 @@
 require File.expand_path(File.dirname(__FILE__) + '/api_spec_helper')
 
 describe UserContent, :type => :integration do
-  it "should translate file links to directly-downloadable urls" do
+  it "should translate course file download links to directly-downloadable urls" do
     course_with_teacher(:active_all => true)
     attachment_model
     @assignment = @course.assignments.create!(:title => "first assignment", :description => <<-HTML)
     <p>
       Hello, students.<br>
-      This will explain everything: <img src="/courses/#{@course.id}/files/#{@attachment.id}/preview" alt="important">
+      This will explain everything: <img src="/courses/#{@course.id}/files/#{@attachment.id}/download" alt="important">
     </p>
     HTML
 
     json = api_call(:get,
-                    "/api/v1/courses/#{@course.id}/assignments/#{@assignment.id}",
-    { :controller => 'assignments_api', :action => 'show',
-      :format => 'json', :course_id => @course.id.to_s, :id => @assignment.id.to_s })
+      "/api/v1/courses/#{@course.id}/assignments/#{@assignment.id}",
+      { :controller => 'assignments_api', :action => 'show',
+        :format => 'json', :course_id => @course.id.to_s, :id => @assignment.id.to_s })
 
     doc = Nokogiri::HTML::DocumentFragment.parse(json['description'])
-    doc.at_css('img')['src'].should == "http://www.example.com/files/#{@attachment.id}/download?verifier=#{@attachment.uuid}"
+    doc.at_css('img')['src'].should == "http://www.example.com/courses/#{@course.id}/files/#{@attachment.id}/download?verifier=#{@attachment.uuid}"
   end
 
-  it "should translate file links to directly-downloadable urls for deleted and replaced files" do
+  it "should translate group file download links to directly-downloadable urls" do
+    course_with_teacher(:active_all => true)
+    @group = @course.groups.create!(:name => "course group")
+    attachment_model(:context => @group)
+    @group.add_user(@teacher)
+    @group_topic = @group.discussion_topics.create!(:title => "group topic", :user => @teacher, :message =>  <<-HTML)
+    <p>
+      Hello, students.<br>
+      This will explain everything: <img src="/groups/#{@group.id}/files/#{@attachment.id}/download" alt="important">
+    </p>
+    HTML
+
+    json = api_call(:get,
+      "/api/v1/groups/#{@group.id}/discussion_topics/#{@group_topic.id}",
+      { :controller => 'discussion_topics_api', :action => 'show',
+        :format => 'json', :group_id => @group.id.to_s, :topic_id => @group_topic.id.to_s })
+
+    doc = Nokogiri::HTML::DocumentFragment.parse(json['message'])
+    doc.at_css('img')['src'].should == "http://www.example.com/groups/#{@group.id}/files/#{@attachment.id}/download?verifier=#{@attachment.uuid}"
+  end
+
+  it "should translate file download links to directly-downloadable urls for deleted and replaced files" do
     course_with_teacher(:active_all => true)
     attachment_model
     @attachment.destroy
@@ -48,17 +69,36 @@ describe UserContent, :type => :integration do
     @assignment = @course.assignments.create!(:title => "first assignment", :description => <<-HTML)
     <p>
       Hello, students.<br>
+      This will explain everything: <img src="/courses/#{@course.id}/files/#{@attachment.id}/download" alt="important">
+    </p>
+    HTML
+
+    json = api_call(:get,
+      "/api/v1/courses/#{@course.id}/assignments/#{@assignment.id}",
+      { :controller => 'assignments_api', :action => 'show',
+        :format => 'json', :course_id => @course.id.to_s, :id => @assignment.id.to_s })
+
+    doc = Nokogiri::HTML::DocumentFragment.parse(json['description'])
+    doc.at_css('img')['src'].should == "http://www.example.com/courses/#{@course.id}/files/#{attachment2.id}/download?verifier=#{attachment2.uuid}"
+  end
+
+  it "should translate file preview links to directly-downloadable preview urls" do
+    course_with_teacher(:active_all => true)
+    attachment_model
+    @assignment = @course.assignments.create!(:title => "first assignment", :description => <<-HTML)
+    <p>
+      Hello, students.<br>
       This will explain everything: <img src="/courses/#{@course.id}/files/#{@attachment.id}/preview" alt="important">
     </p>
     HTML
 
     json = api_call(:get,
-                    "/api/v1/courses/#{@course.id}/assignments/#{@assignment.id}",
-                    { :controller => 'assignments_api', :action => 'show',
-                      :format => 'json', :course_id => @course.id.to_s, :id => @assignment.id.to_s })
+      "/api/v1/courses/#{@course.id}/assignments/#{@assignment.id}",
+      { :controller => 'assignments_api', :action => 'show',
+        :format => 'json', :course_id => @course.id.to_s, :id => @assignment.id.to_s })
 
     doc = Nokogiri::HTML::DocumentFragment.parse(json['description'])
-    doc.at_css('img')['src'].should == "http://www.example.com/files/#{attachment2.id}/download?verifier=#{attachment2.uuid}"
+    doc.at_css('img')['src'].should == "http://www.example.com/courses/#{@course.id}/files/#{@attachment.id}/preview?verifier=#{@attachment.uuid}"
   end
 
   it "should translate media comment links to embedded video tags" do
@@ -178,7 +218,7 @@ describe UserContent, :type => :integration do
     @wiki_page.workflow_state = 'active'
     @wiki_page.save!
     api_call(:get, "/api/v1/courses/#{@course.id}/pages/#{@wiki_page.url}",
-               { :controller => 'wiki_pages', :action => 'api_show',
+               { :controller => 'wiki_pages_api', :action => 'show',
                  :format => 'json', :course_id => @course.id.to_s, :url => @wiki_page.url })
   end
 
@@ -204,7 +244,7 @@ describe UserContent, :type => :integration do
         @wiki_page.save!
 
         json = api_call(:get, "/api/v1/courses/#{@course.id}/pages/#{@wiki_page.url}",
-                        { :controller => 'wiki_pages', :action => 'api_show',
+                        { :controller => 'wiki_pages_api', :action => 'show',
                           :format => 'json', :course_id => @course.id.to_s, :url => @wiki_page.url })
         doc = Nokogiri::HTML::DocumentFragment.parse(json['body'])
         doc.css('a').collect { |att| att['data-api-endpoint'] }.should == [
@@ -241,7 +281,7 @@ describe UserContent, :type => :integration do
         @wiki_page.save!
 
         json = api_call(:get, "/api/v1/groups/#{@group.id}/pages/#{@wiki_page.url}",
-                        { :controller => 'wiki_pages', :action => 'api_show',
+                        { :controller => 'wiki_pages_api', :action => 'show',
                           :format => 'json', :group_id => @group.id.to_s, :url => @wiki_page.url })
         doc = Nokogiri::HTML::DocumentFragment.parse(json['body'])
         doc.css('a').collect { |att| att['data-api-endpoint'] }.should == [
@@ -276,6 +316,61 @@ describe UserContent, :type => :integration do
         doc.css('a').collect { |att| att['data-api-returntype'] }.should ==
             %w(Folder File)
       end
+    end
+  end
+
+  context "process_incoming_html_content" do
+    class Tester
+      include Api
+    end
+
+    let(:tester) { Tester.new }
+
+    it "should add the expected href to instructure_inline_media_comment anchors" do
+      factory_with_protected_attributes(MediaObject, media_id: 'test2', media_type: 'audio')
+      html = tester.process_incoming_html_content(<<-HTML)
+      <a id='something-else' href='/blah'>no touchy</a>
+      <a class='instructure_inline_media_comment audio_comment'>no id</a>
+      <a id='media_comment_test1' class='instructure_inline_media_comment audio_comment'>with id</a>
+      <a id='media_comment_test2' class='instructure_inline_media_comment'>id, no type</a>
+      <a id='media_comment_test3' class='instructure_inline_media_comment'>id, no type, missing object</a>
+      HTML
+
+      doc = Nokogiri::HTML::DocumentFragment.parse(html)
+      anchors = doc.css('a')
+      anchors[0]['id'].should == 'something-else'
+      anchors[0]['href'].should == '/blah'
+      anchors[1]['href'].should be_nil
+      anchors[2]['href'].should == '/media_objects/test1'
+      anchors[2]['class'].should == 'instructure_inline_media_comment audio_comment'
+      anchors[3]['class'].should == 'instructure_inline_media_comment audio_comment' # media_type added by code
+      anchors[3]['href'].should == '/media_objects/test2'
+      anchors[4]['class'].should == 'instructure_inline_media_comment' # media object not found, no type added
+      anchors[4]['href'].should == '/media_objects/test3'
+    end
+
+    it "should translate video and audio instructure_inline_media_comment tags" do
+      html = tester.process_incoming_html_content(<<-HTML)
+      <video src='/other'></video>
+      <video class='instructure_inline_media_comment' src='/some/redirect/url'>no media id</video>
+      <video class='instructure_inline_media_comment' src='/some/redirect/url' data-media_comment_id='test1'>with media id</video>
+      <audio class='instructure_inline_media_comment' src='/some/redirect/url' data-media_comment_id='test2'>with media id</video>
+      HTML
+
+      doc = Nokogiri::HTML::DocumentFragment.parse(html)
+      tags = doc.css('audio,video,a')
+      tags[0].name.should == 'video'
+      tags[0]['src'].should == '/other'
+      tags[0]['class'].should be_nil
+      tags[1].name.should == 'video'
+      tags[2].name.should == 'a'
+      tags[2]['class'].should == 'instructure_inline_media_comment video_comment'
+      tags[2]['href'].should == '/media_objects/test1'
+      tags[2]['id'].should == 'media_comment_test1'
+      tags[3].name.should == 'a'
+      tags[3]['class'].should == 'instructure_inline_media_comment audio_comment'
+      tags[3]['href'].should == '/media_objects/test2'
+      tags[3]['id'].should == 'media_comment_test2'
     end
   end
 end

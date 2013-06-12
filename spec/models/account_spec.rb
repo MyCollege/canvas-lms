@@ -412,7 +412,8 @@ describe Account do
     end
 
     limited_access = [ :read, :manage, :update, :delete, :read_outcomes ]
-    full_access = RoleOverride.permissions.keys + limited_access
+    account_enabled_access = [ :view_notifications ]
+    full_access = RoleOverride.permissions.keys + limited_access - account_enabled_access
     index = full_access.index(:manage_courses)
     full_access = full_access[0..index] + [:create_courses] + full_access[index+1..-1]
     full_root_access = full_access - RoleOverride.permissions.select { |k, v| v[:account_only] == :site_admin }.map(&:first)
@@ -643,7 +644,7 @@ describe Account do
     it "should not include external tools if not configured for course navigation" do
       @account = Account.default.sub_accounts.create!(:name => "sub-account")
       tool = @account.context_external_tools.new(:name => "bob", :consumer_key => "bob", :shared_secret => "bob", :domain => "example.com")
-      tool.settings[:user_navigation] = {:url => "http://www.example.com", :text => "Example URL"}
+      tool.user_navigation = {:url => "http://www.example.com", :text => "Example URL"}
       tool.save!
       tool.has_account_navigation.should == false
       tabs = @account.tabs_available(nil)
@@ -685,7 +686,7 @@ describe Account do
     it "should include external tools if configured on the root account" do
       @account = Account.default.sub_accounts.create!(:name => "sub-account")
       tool = @account.context_external_tools.new(:name => "bob", :consumer_key => "bob", :shared_secret => "bob", :domain => "example.com")
-      tool.settings[:account_navigation] = {:url => "http://www.example.com", :text => "Example URL"}
+      tool.account_navigation = {:url => "http://www.example.com", :text => "Example URL"}
       tool.save!
       tool.has_account_navigation.should == true
       tabs = @account.tabs_available(nil)

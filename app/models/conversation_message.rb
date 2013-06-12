@@ -63,7 +63,7 @@ class ConversationMessage < ActiveRecord::Base
         SQL
       end
 
-      ActiveRecord::Base::ConnectionSpecification.with_environment(:slave) do
+      Shackles.activate(:slave) do
         ret = distinct_on(['conversation_id', 'user_id'],
           :select => "conversation_messages.*, conversation_participant_id, conversation_message_participants.user_id, conversation_message_participants.tags",
           :joins => 'JOIN conversation_message_participants ON conversation_messages.id = conversation_message_id',
@@ -227,7 +227,7 @@ class ConversationMessage < ActiveRecord::Base
   end
 
   def reply_from(opts)
-    raise IncomingMessageProcessor::UnknownAddressError if self.context.try(:root_account).try(:deleted?)
+    raise IncomingMail::IncomingMessageProcessor::UnknownAddressError if self.context.try(:root_account).try(:deleted?)
     conversation.reply_from(opts.merge(:root_account_id => self.root_account_id))
   end
 

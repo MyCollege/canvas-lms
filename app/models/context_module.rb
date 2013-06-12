@@ -241,14 +241,15 @@ class ContextModule < ActiveRecord::Base
   end
 
   def add_item(params, added_item=nil, opts={})
+    params[:type] = params[:type].underscore if params[:type]
     position = opts[:position] || (self.content_tags.active.map(&:position).compact.max || 0) + 1
-    if params[:type] == "wiki_page"
+    if params[:type] == "wiki_page" || params[:type] == "page"
       item = opts[:wiki_page] || self.context.wiki.wiki_pages.find_by_id(params[:id])
-    elsif params[:type] == "attachment"
+    elsif params[:type] == "attachment" || params[:type] == "file"
       item = opts[:attachment] || self.context.attachments.active.find_by_id(params[:id])
     elsif params[:type] == "assignment"
       item = opts[:assignment] || self.context.assignments.active.find_by_id(params[:id])
-    elsif params[:type] == "discussion_topic"
+    elsif params[:type] == "discussion_topic" || params[:type] == "discussion"
       item = opts[:discussion_topic] || self.context.discussion_topics.active.find_by_id(params[:id])
     elsif params[:type] == "quiz"
       item = opts[:quiz] || self.context.quizzes.active.find_by_id(params[:id])
@@ -270,7 +271,7 @@ class ContextModule < ActiveRecord::Base
       added_item.workflow_state = 'active'
       added_item.save
       added_item
-    elsif params[:type] == 'context_external_tool'
+    elsif params[:type] == 'context_external_tool' || params[:type] == 'external_tool'
       title = params[:title]
       added_item ||= self.content_tags.build(:context => self.context)
       tool = ContextExternalTool.find_external_tool(params[:url], self.context, params[:id].to_i)
@@ -292,7 +293,7 @@ class ContextModule < ActiveRecord::Base
       added_item.workflow_state = 'active'
       added_item.save
       added_item
-    elsif params[:type] == 'context_module_sub_header'
+    elsif params[:type] == 'context_module_sub_header' || params[:type] == 'sub_header'
       title = params[:title]
       added_item ||= self.content_tags.build(:context => self.context)
       added_item.attributes = {
@@ -657,7 +658,7 @@ class ContextModule < ActiveRecord::Base
         begin
           import_from_migration(mod, migration.context)
         rescue
-          migration.add_warning("Couldn't import the module \"#{mod[:title]}\"", $!)
+          migration.add_import_warning(t('#migration.module_type', "Module"), mod[:title], $!)
         end
       end
     end
@@ -691,7 +692,8 @@ class ContextModule < ActiveRecord::Base
     item.unlock_at = Canvas::Migration::MigratorHelper.get_utc_time_from_timestamp(hash[:unlock_at]) if hash[:unlock_at]
     item.start_at = Canvas::Migration::MigratorHelper.get_utc_time_from_timestamp(hash[:start_at]) if hash[:start_at]
     item.end_at = Canvas::Migration::MigratorHelper.get_utc_time_from_timestamp(hash[:end_at]) if hash[:end_at]
-    
+    item.require_sequential_progress = hash[:require_sequential_progress] if hash[:require_sequential_progress]
+
     if hash[:prerequisites]
       preqs = []
       hash[:prerequisites].each do |prereq|
@@ -714,8 +716,7 @@ class ContextModule < ActiveRecord::Base
       begin
         item.add_item_from_migration(tag_hash, 0, context, item_map)
       rescue
-        message =t('broken_item', %{Couldn't import the module item "%{item_title}" in the module "%{module_title}"}, :item_title =>tag_hash[:title], :module_title => hash[:title] )
-        context.add_migration_warning(message, $!)
+        context.content_migration.add_import_warning(t(:migration_module_item_type, "Module Item"), tag_hash[:title], $!) if context.content_migration
       end
     end
     

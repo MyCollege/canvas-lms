@@ -73,6 +73,7 @@ class AssignmentsController < ApplicationController
       js_env :ROOT_OUTCOME_GROUP => outcome_group_json(@context.root_outcome_group, @current_user, session)
 
       @locked = @assignment.locked_for?(@current_user, :check_policies => true, :deep_check_if_needed => true)
+      @locked.delete(:lock_at) if @locked.is_a?(Hash) && @locked.has_key?(:unlock_at) # removed to allow proper translation on show page
       @unlocked = !@locked || @assignment.grants_rights?(@current_user, session, :update)[:update]
       @assignment_module = ContextModuleItem.find_tag_with_preferred([@assignment], params[:module_item_id])
       @assignment.context_module_action(@current_user, :read) if @unlocked && !@assignment.new_record?
@@ -224,7 +225,14 @@ class AssignmentsController < ApplicationController
       @events = @context.events_for(@current_user)
       @undated_events = @events.select {|e| e.start_at == nil}
       @dates = (@events.select {|e| e.start_at != nil}).map {|e| e.start_at.to_date}.uniq.sort.sort
-      @syllabus_body = api_user_content(@context.syllabus_body, @context)
+      if @context.grants_right?(@current_user, session, :read)
+        @syllabus_body = api_user_content(@context.syllabus_body, @context)
+      else
+        # the requesting user may not have :read if the course syllabus is public, in which
+        # case, we pass nil as the user so verifiers are added to links in the syllabus body
+        # (ability for the user to read the syllabus was checked above as :read_syllabus)
+        @syllabus_body = api_user_content(@context.syllabus_body, @context, nil)
+      end
 
       log_asset_access("syllabus:#{@context.asset_string}", "syllabus", 'other')
       respond_to do |format|
@@ -363,7 +371,7 @@ class AssignmentsController < ApplicationController
           @assignment.reload
           flash[:notice] = t 'notices.updated', "Assignment was successfully updated."
           format.html { redirect_to named_context_url(@context, :context_assignment_url, @assignment) }
-          format.json { render :json => @assignment.to_json(:permissions => {:user => @current_user, :session => session}, :methods => [:readable_submission_types], :include => [:quiz, :discussion_topic]), :status => :ok }
+          format.json { render :json => @assignment.to_json(:permissions => {:user => @current_user, :session => session}, :include => [:quiz, :discussion_topic]), :status => :ok }
         else
           format.html { render :action => "edit" }
           format.json { render :json => @assignment.errors.to_json, :status => :bad_request }

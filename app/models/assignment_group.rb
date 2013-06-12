@@ -126,6 +126,7 @@ class AssignmentGroup < ActiveRecord::Base
   scope :active, where("assignment_groups.workflow_state<>'deleted'")
   scope :before, lambda { |date| where("assignment_groups.created_at<?", date) }
   scope :for_context_codes, lambda { |codes| active.where(:context_code => codes).order(:position) }
+  scope :for_course, lambda { |course| where(:context_id => course, :context_type => 'Course') }
 
   def group_weight_changed
     @group_weight_changed = self.group_weight_changed?
@@ -178,7 +179,7 @@ class AssignmentGroup < ActiveRecord::Base
         begin
           import_from_migration(group, migration.context)
         rescue
-          migration.add_warning("Couldn't import assignment group \"#{group[:title]}\"", $!)
+          migration.add_import_warning(t('#migration.assignment_group_type', "Assignment Group"), group[:title], $!)
         end
       end
     end

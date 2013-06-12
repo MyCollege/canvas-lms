@@ -150,12 +150,14 @@ class Account < ActiveRecord::Base
   add_setting :users_can_edit_name, :boolean => true, :root_only => true
   add_setting :open_registration, :boolean => true, :root_only => true
   add_setting :enable_scheduler, :boolean => true, :root_only => true, :default => false
+  add_setting :enable_draft, :boolean => true, :root_only => true, :default => false
   add_setting :calendar2_only, :boolean => true, :root_only => true, :default => false
   add_setting :show_scheduler, :boolean => true, :root_only => true, :default => false
   add_setting :enable_profiles, :boolean => true, :root_only => true, :default => false
   add_setting :mfa_settings, :root_only => true
   add_setting :canvas_authentication, :boolean => true, :root_only => true
   add_setting :admins_can_change_passwords, :boolean => true, :root_only => true, :default => false
+  add_setting :admins_can_view_notifications, :boolean => true, :root_only => true, :default => false
   add_setting :outgoing_email_default_name
   add_setting :external_notification_warning, :boolean => true, :default => false
   # When a user is invited to a course, do we let them see a preview of the
@@ -167,6 +169,7 @@ class Account < ActiveRecord::Base
   add_setting :self_registration, :boolean => true, :root_only => true, :default => false
   add_setting :large_course_rosters, :boolean => true, :root_only => true, :default => false
   add_setting :edit_institution_email, :boolean => true, :root_only => true, :default => true
+  add_setting :file_upload_quiz_questions, :boolean => true, :root_only => true, :default => false
 
   def settings=(hash)
     if hash.is_a?(Hash)
@@ -389,7 +392,7 @@ class Account < ActiveRecord::Base
   end
 
   def file_namespace
-    Shard.default.activate { "account_#{self.root_account.id}" }
+    Shard.birth.activate { "account_#{self.root_account.id}" }
   end
   
   def self.account_lookup_cache_key(id)
@@ -799,9 +802,6 @@ class Account < ActiveRecord::Base
   def precache
   end
 
-  # for plugins
-  def tracking_fields(params={}); []; end
-
   def self.find_cached(id)
     account = Rails.cache.fetch(account_lookup_cache_key(id), :expires_in => 1.hour) do
       account = Account.find_by_id(id)
@@ -813,7 +813,7 @@ class Account < ActiveRecord::Base
   end
 
   def self.get_special_account(special_account_type, default_account_name)
-    Shard.default.activate do
+    Shard.birth.activate do
       @special_account_ids ||= {}
       @special_accounts ||= {}
 

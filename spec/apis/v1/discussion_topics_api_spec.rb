@@ -114,6 +114,17 @@ describe DiscussionTopicsController, :type => :integration do
       @topic.require_initial_post?.should be_false
     end
 
+    it 'should process html content in message on create' do
+      should_process_incoming_user_content(@course) do |content|
+        api_call(:post, "/api/v1/courses/#{@course.id}/discussion_topics",
+                 { :controller => "discussion_topics", :action => "create", :format => "json", :course_id => @course.to_param },
+                 { :title => "test title", :message => content })
+
+        @topic = @course.discussion_topics.order(:id).last
+        @topic.message
+      end
+    end
+
     it "should post an announcment" do
       api_call(:post, "/api/v1/courses/#{@course.id}/discussion_topics",
                { :controller => "discussion_topics", :action => "create", :format => "json", :course_id => @course.to_param },
@@ -125,15 +136,18 @@ describe DiscussionTopicsController, :type => :integration do
 
     it "should create a topic with all the bells and whistles" do
       post_at = 1.month.from_now
+      lock_at = 2.months.from_now
       api_call(:post, "/api/v1/courses/#{@course.id}/discussion_topics",
                { :controller => "discussion_topics", :action => "create", :format => "json", :course_id => @course.to_param },
-               { :title => "test title", :message => "test <b>message</b>", :discussion_type => "threaded", :delayed_post_at => post_at.as_json, :podcast_has_student_posts => '1', :require_initial_post => '1' })
+               { :title => "test title", :message => "test <b>message</b>", :discussion_type => "threaded", 
+                 :delayed_post_at => post_at.as_json, :lock_at => lock_at.as_json, :podcast_has_student_posts => '1', :require_initial_post => '1' })
       @topic = @course.discussion_topics.order(:id).last
       @topic.title.should == "test title"
       @topic.message.should == "test <b>message</b>"
       @topic.threaded?.should == true
       @topic.post_delayed?.should == true
       @topic.delayed_post_at.to_i.should == post_at.to_i
+      @topic.lock_at.to_i.should == lock_at.to_i
       @topic.podcast_enabled?.should == true
       @topic.podcast_has_student_posts?.should == true
       @topic.require_initial_post?.should == true
@@ -178,6 +192,7 @@ describe DiscussionTopicsController, :type => :integration do
                   "discussion_subentry_count"=>0,
                   "assignment_id"=>nil,
                   "delayed_post_at"=>nil,
+                  "lock_at"=>nil,
                   "id"=>@topic.id,
                   "user_name"=>@user.name,
                   "last_reply_at"=>@topic.last_reply_at.as_json,
@@ -201,6 +216,7 @@ describe DiscussionTopicsController, :type => :integration do
                                    'hidden_for_user' => false,
                                    'created_at' => @attachment.created_at.as_json,
                                    'updated_at' => @attachment.updated_at.as_json,
+                                   'thumbnail_url' => @attachment.thumbnail_url,
                   }],
                   "topic_children"=>[@sub.id],
                   "discussion_type" => 'side_comment',
@@ -241,12 +257,14 @@ describe DiscussionTopicsController, :type => :integration do
 
       it "should update the entry" do
         post_at = 1.month.from_now
+        lock_at = 2.months.from_now
         api_call(:put, "/api/v1/courses/#{@course.id}/discussion_topics/#{@topic.id}",
                  { :controller => "discussion_topics", :action => "update", :format => "json", :course_id => @course.to_param, :topic_id => @topic.to_param },
                  { :title => "test title",
                    :message => "test <b>message</b>",
                    :discussion_type => "threaded",
                    :delayed_post_at => post_at.as_json,
+                   :lock_at => lock_at.as_json,
                    :podcast_has_student_posts => '1',
                    :require_initial_post => '1' })
         @topic.reload
@@ -255,9 +273,110 @@ describe DiscussionTopicsController, :type => :integration do
         @topic.threaded?.should == true
         @topic.post_delayed?.should == true
         @topic.delayed_post_at.to_i.should == post_at.to_i
+        @topic.lock_at.to_i.should == lock_at.to_i
         @topic.podcast_enabled?.should == true
         @topic.podcast_has_student_posts?.should == true
         @topic.require_initial_post?.should == true
+      end
+
+      it "should not unlock topic if lock_at changes but is still in the past" do
+        lock_at = 1.month.ago
+        new_lock_at = 1.week.ago
+        @topic.workflow_state = 'locked'
+        @topic.lock_at = lock_at
+        @topic.save!
+
+        api_call(:put, "/api/v1/courses/#{@course.id}/discussion_topics/#{@topic.id}",
+                 { :controller => "discussion_topics", :action => "update", :format => "json", :course_id => @course.to_param, :topic_id => @topic.to_param },
+                 { :lock_at => new_lock_at.as_json })
+        @topic.reload
+        @topic.lock_at.to_i.should == new_lock_at.to_i
+        @topic.should be_locked
+      end
+
+      it "should update workflow_state if delayed_post_at changed to future" do
+        post_at = 1.month.from_now
+        @topic.workflow_state = 'locked'
+        @topic.save!
+
+        api_call(:put, "/api/v1/courses/#{@course.id}/discussion_topics/#{@topic.id}",
+                 { :controller => "discussion_topics", :action => "update", :format => "json", :course_id => @course.to_param, :topic_id => @topic.to_param },
+                 { :delayed_post_at => post_at.as_json })
+        @topic.reload
+        @topic.delayed_post_at.to_i.should == post_at.to_i
+        @topic.should be_post_delayed
+      end
+
+      it "should not change workflow_state if lock_at does not change" do
+        lock_at = 1.month.from_now.change(:usec => 0)
+        @topic.lock_at = lock_at
+        @topic.workflow_state = 'active'
+        @topic.save!
+
+        api_call(:put, "/api/v1/courses/#{@course.id}/discussion_topics/#{@topic.id}",
+                 { :controller => "discussion_topics", :action => "update", :format => "json", :course_id => @course.to_param, :topic_id => @topic.to_param },
+                 { :lock_at => lock_at.as_json })
+
+        @topic.reload
+        @topic.lock_at.should == lock_at
+        @topic.should be_active
+      end
+
+      it "should unlock topic if lock_at is changed to future" do
+        old_lock_at = 1.month.ago
+        new_lock_at = 1.month.from_now
+        @topic.lock_at = old_lock_at
+        @topic.workflow_state = 'locked'
+        @topic.save!
+
+        api_call(:put, "/api/v1/courses/#{@course.id}/discussion_topics/#{@topic.id}",
+                 { :controller => "discussion_topics", :action => "update", :format => "json", :course_id => @course.to_param, :topic_id => @topic.to_param },
+                 { :lock_at => new_lock_at.as_json })
+
+        @topic.reload
+        @topic.lock_at.to_i.should == new_lock_at.to_i
+        @topic.should be_active
+      end
+
+      it "should lock the topic if lock_at is changed to the past" do
+        old_lock_at = 1.month.from_now
+        new_lock_at = 1.month.ago
+        @topic.lock_at = old_lock_at
+        @topic.workflow_state = 'active'
+        @topic.save!
+
+        api_call(:put, "/api/v1/courses/#{@course.id}/discussion_topics/#{@topic.id}",
+                 { :controller => "discussion_topics", :action => "update", :format => "json", :course_id => @course.to_param, :topic_id => @topic.to_param },
+                 { :lock_at => new_lock_at.as_json })
+
+        @topic.reload
+        @topic.lock_at.to_i.should == new_lock_at.to_i
+        @topic.should be_locked
+      end
+
+      it "should not lock the topic if lock_at is cleared" do
+        @topic.lock_at = 1.month.ago
+        @topic.workflow_state = 'active'
+        @topic.save!
+
+        api_call(:put, "/api/v1/courses/#{@course.id}/discussion_topics/#{@topic.id}",
+                 { :controller => "discussion_topics", :action => "update", :format => "json", :course_id => @course.to_param, :topic_id => @topic.to_param },
+                 { :lock_at => '' })
+
+        @topic.reload
+        @topic.lock_at.should be_nil
+        @topic.should be_active
+      end
+
+      it 'should process html content in message on update' do
+        should_process_incoming_user_content(@course) do |content|
+          api_call(:put, "/api/v1/courses/#{@course.id}/discussion_topics/#{@topic.id}",
+                   { :controller => "discussion_topics", :action => "update", :format => "json", :course_id => @course.to_param, :topic_id => @topic.to_param },
+                   { :message => content })
+
+          @topic.reload
+          @topic.message
+        end
       end
 
       it "should set the editor_id to whoever edited to entry" do
@@ -443,6 +562,7 @@ describe DiscussionTopicsController, :type => :integration do
       "discussion_subentry_count"=>0,
       "assignment_id"=>nil,
       "delayed_post_at"=>nil,
+      "lock_at"=>nil,
       "id"=>gtopic.id,
       "user_name"=>@user.name,
       "last_reply_at"=>gtopic.last_reply_at.as_json,
@@ -464,6 +584,7 @@ describe DiscussionTopicsController, :type => :integration do
                 'hidden_for_user' => false,
                 'created_at' => attachment.created_at.as_json,
                 'updated_at' => attachment.updated_at.as_json,
+                'thumbnail_url' => attachment.thumbnail_url,
               }],
       "posted_at"=>gtopic.posted_at.as_json,
       "root_topic_id"=>nil,
@@ -567,6 +688,7 @@ describe DiscussionTopicsController, :type => :integration do
         "user_id" => @user.id,
         "user_name" => @user.name,
         "read_state" => "read",
+        "forced_read_state" => false,
         "message" => @message,
         "created_at" => @entry.created_at.utc.iso8601,
         "updated_at" => @entry.updated_at.as_json,
@@ -1137,9 +1259,9 @@ describe DiscussionTopicsController, :type => :integration do
     end
 
     def call_mark_entry_unread(course, topic, entry)
-      raw_api_call(:delete, "/api/v1/courses/#{course.id}/discussion_topics/#{topic.id}/entries/#{entry.id}/read.json",
+      raw_api_call(:delete, "/api/v1/courses/#{course.id}/discussion_topics/#{topic.id}/entries/#{entry.id}/read.json?forced_read_state=true",
                       { :controller => 'discussion_topics_api', :action => 'mark_entry_unread', :format => 'json',
-                        :course_id => course.id.to_s, :topic_id => topic.id.to_s, :entry_id => entry.id.to_s })
+                        :course_id => course.id.to_s, :topic_id => topic.id.to_s, :entry_id => entry.id.to_s, :forced_read_state => "true" })
     end
 
     it "should set the read state for a entry" do
@@ -1147,12 +1269,20 @@ describe DiscussionTopicsController, :type => :integration do
       call_mark_entry_read(@course, @topic, @entry)
       response.status.should == '204 No Content'
       @entry.read?(@user).should be_true
+      @entry.find_existing_participant(@user).should_not be_forced_read_state
       @topic.unread_count(@user).should == 1
 
       call_mark_entry_unread(@course, @topic, @entry)
       response.status.should == '204 No Content'
       @entry.read?(@user).should be_false
+      @entry.find_existing_participant(@user).should be_forced_read_state
       @topic.unread_count(@user).should == 2
+
+      call_mark_entry_read(@course, @topic, @entry)
+      response.status.should == '204 No Content'
+      @entry.read?(@user).should be_true
+      @entry.find_existing_participant(@user).should be_forced_read_state
+      @topic.unread_count(@user).should == 1
     end
 
     it "should be idempotent for setting entry read state" do
@@ -1168,24 +1298,50 @@ describe DiscussionTopicsController, :type => :integration do
       @topic.unread_count(@user).should == 1
     end
 
-    it "should allow mark all as read/unread" do
+    def call_mark_all_as_read_state(new_state, opts = {})
+      method = new_state == 'read' ? :put : :delete
+      url = "/api/v1/courses/#{@course.id}/discussion_topics/#{@topic.id}/read_all.json"
+      expected_params = { :controller => 'discussion_topics_api', :action => "mark_all_#{new_state}", :format => 'json',
+                        :course_id => @course.id.to_s, :topic_id => @topic.id.to_s }
+      if opts.has_key?(:forced)
+        url << "?forced_read_state=#{opts[:forced]}"
+        expected_params[:forced_read_state] = opts[:forced].to_s
+      end
+      raw_api_call(method, url, expected_params)
+    end
+
+    it "should allow mark all as read without forced update" do
       student_in_course(:active_all => true)
-      raw_api_call(:put, "/api/v1/courses/#{@course.id}/discussion_topics/#{@topic.id}/read_all.json",
-                      { :controller => 'discussion_topics_api', :action => 'mark_all_read', :format => 'json',
-                        :course_id => @course.id.to_s, :topic_id => @topic.id.to_s })
+      @entry.change_read_state('read', @user, :forced => true)
+
+      call_mark_all_as_read_state('read')
       response.status.should == '204 No Content'
       @topic.reload
       @topic.read?(@user).should be_true
-      @entry.read?(@user).should be_true
-      @topic.unread_count(@user).should == 0
 
-      raw_api_call(:delete, "/api/v1/courses/#{@course.id}/discussion_topics/#{@topic.id}/read_all.json",
-                      { :controller => 'discussion_topics_api', :action => 'mark_all_unread', :format => 'json',
-                        :course_id => @course.id.to_s, :topic_id => @topic.id.to_s })
+      @entry.read?(@user).should be_true
+      @entry.find_existing_participant(@user).should be_forced_read_state
+
+      @reply.read?(@user).should be_true
+      @reply.find_existing_participant(@user).should_not be_forced_read_state
+
+      @topic.unread_count(@user).should == 0
+    end
+
+    it "should allow mark all as unread with forced update" do
+      [@topic, @entry].each { |e| e.change_read_state('read', @user) }
+
+      call_mark_all_as_read_state('unread', :forced => true)
       response.status.should == '204 No Content'
       @topic.reload
       @topic.read?(@user).should be_false
+
       @entry.read?(@user).should be_false
+      @entry.find_existing_participant(@user).should be_forced_read_state
+
+      @reply.read?(@user).should be_false
+      @reply.find_existing_participant(@user).should be_forced_read_state
+
       @topic.unread_count(@user).should == 2
     end
   end
@@ -1326,6 +1482,7 @@ describe DiscussionTopicsController, :type => :integration do
         'hidden_for_user' => false,
         'created_at' => @attachment.created_at.as_json,
         'updated_at' => @attachment.updated_at.as_json,
+        'thumbnail_url' => @attachment.thumbnail_url,
       }
 
       v0 = json['view'][0]
@@ -1354,7 +1511,7 @@ describe DiscussionTopicsController, :type => :integration do
       v0_r1 = v0['replies'][1]
       v0_r1['id'].should         == @reply2.id
       v0_r1['user_id'].should    == @teacher.id
-      v0_r1['message'].should    == "<p><a href=\"http://#{Account.default.domain}/files/#{@reply2_attachment.id}/download?verifier=#{@reply2_attachment.uuid}\">This is a file link</a></p>\n    <p>This is a video:\n      <video poster=\"http://#{Account.default.domain}/media_objects/0_abcde/thumbnail?height=448&amp;type=3&amp;width=550\" data-media_comment_type=\"video\" preload=\"none\" class=\"instructure_inline_media_comment\" data-media_comment_id=\"0_abcde\" controls=\"controls\" src=\"http://#{Account.default.domain}/courses/#{@course.id}/media_download?entryId=0_abcde&amp;redirect=1&amp;type=mp4\">link</video>\n    </p>"
+      v0_r1['message'].should    == "<p><a href=\"http://#{Account.default.domain}/courses/#{@course.id}/files/#{@reply2_attachment.id}/download?verifier=#{@reply2_attachment.uuid}\">This is a file link</a></p>\n    <p>This is a video:\n      <video poster=\"http://#{Account.default.domain}/media_objects/0_abcde/thumbnail?height=448&amp;type=3&amp;width=550\" data-media_comment_type=\"video\" preload=\"none\" class=\"instructure_inline_media_comment\" data-media_comment_id=\"0_abcde\" controls=\"controls\" src=\"http://#{Account.default.domain}/courses/#{@course.id}/media_download?entryId=0_abcde&amp;redirect=1&amp;type=mp4\">link</video>\n    </p>"
       v0_r1['parent_id'].should  == @root1.id
       v0_r1['created_at'].should == @reply2.created_at.as_json
       v0_r1['updated_at'].should == @reply2.updated_at.as_json
@@ -1455,7 +1612,7 @@ describe DiscussionTopicsController, :type => :integration do
     it "should return an empty discussion view for an item" do
       json = api_call(:get, "/api/v1/collection_items/#{@item.id}/discussion_topics/self/view",
         { :collection_item_id => "#{@item.id}", :controller => "discussion_topics_api", :format => "json", :action => "view", :topic_id => "self"})
-      json.should == { "participants" => [], "unread_entries" => [], "view" => [], "new_entries" => [] }
+      json.should == { "participants" => [], "unread_entries" => [], "forced_entries" => [], "view" => [], "new_entries" => [] }
       @item.discussion_topic.should be_new_record
     end
 

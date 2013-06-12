@@ -40,6 +40,8 @@ describe Api::V1::Course do
       @user.pseudonym.update_attribute(:sis_user_id, 'user1')
     end
 
+    let(:teacher_enrollment) { @course1.teacher_enrollments.first }
+
     it 'should support optionally providing the url' do
       @test_api.course_json(@course1, @me, {}, ['html_url'], []).should encompass({
         "html_url" => "course_url(Course.find(#{@course1.id}), :host => #{HostUrl.context_host(@course1)})"
@@ -48,19 +50,38 @@ describe Api::V1::Course do
     end
 
     it 'should only include needs_grading_count if requested' do
-      @teacher_enrollment = @course1.teacher_enrollments.first
-      @test_api.course_json(@course1, @me, {}, [], [@teacher_enrollment]).has_key?("needs_grading_count").should be_false
+      @test_api.course_json(@course1, @me, {}, [], [teacher_enrollment]).has_key?("needs_grading_count").should be_false
     end
 
     it 'should honor needs_grading_count for teachers' do
-      @teacher_enrollment = @course1.teacher_enrollments.first
-      @test_api.course_json(@course1, @me, {}, ['needs_grading_count'], [@teacher_enrollment]).has_key?("needs_grading_count").should be_true
+      @test_api.course_json(@course1, @me, {}, ['needs_grading_count'], [teacher_enrollment]).has_key?("needs_grading_count").should be_true
     end
 
     it 'should not honor needs_grading_count for designers' do
       @designer_enrollment = @course1.enroll_designer(@me)
       @designer_enrollment.accept!
       @test_api.course_json(@course1, @me, {}, ['needs_grading_count'], [@designer_enrollment]).has_key?("needs_grading_count").should be_false
+    end
+
+    context "total_scores" do
+      before do
+        @enrollment.computed_current_score = 95.0;
+        @enrollment.computed_final_score = 85.0;
+        def @course.grading_standard_enabled?; true; end
+      end
+
+      let(:json) { @test_api.course_json(@course1, @me, {}, ['total_scores'], [@enrollment]) }
+
+      it "should include computed scores" do
+        json['enrollments'].should == [{
+          "type" => "student",
+          "role" => "StudentEnrollment",
+          "computed_current_score" => 95,
+          "computed_final_score" => 85,
+          "computed_current_grade" => "A",
+          "computed_final_grade" => "B"
+        }]
+      end
     end
   end
 
@@ -216,6 +237,17 @@ describe CoursesController, :type => :integration do
           'calendar' => { 'ics' => "http://www.example.com/feeds/calendars/course_#{new_course.uuid}.ics" }
         )
         json.should eql course_response
+      end
+
+      it 'should process html content in syllabus_body on create' do
+        should_process_incoming_user_content(@course) do |content|
+          json = api_call(:post, @resource_path,
+            @resource_params,
+            { :account_id => @account.id, :offer => true, :course => { :name => 'Test Course', :syllabus_body => content } }
+          )
+          new_course = Course.find(json['id'])
+          new_course.syllabus_body
+        end
       end
 
       it "should offer a course if passed the 'offer' parameter" do
@@ -396,6 +428,15 @@ describe CoursesController, :type => :integration do
         json['start_at'].should eql @new_values['course']['start_at']
         json['end_at'].should eql @new_values['course']['end_at']
         json['default_view'].should eql @new_values['course']['default_view']
+      end
+
+      it 'should process html content in syllabus_body on update' do
+        should_process_incoming_user_content(@course) do |content|
+          json = api_call(:put, @path, @params, {'course' => {'syllabus_body' => content}})
+
+          @course.reload
+          @course.syllabus_body
+        end
       end
 
       it "should not be able to update the storage quota (bytes)" do
@@ -796,7 +837,79 @@ describe CoursesController, :type => :integration do
     end
   end
 
-  describe "students" do
+  describe "course state" do
+    before do
+      @course3 = course
+      @course3.enroll_user(@me, 'TeacherEnrollment', { :role_name => 'SuperTeacher', :active_all => true })
+      @course4 = course
+      @course4.enroll_user(@me, 'TaEnrollment')
+      @course4.workflow_state = 'created'
+      @course4.save
+    end
+    
+    it "should return only courses with state available on ?state[]=available" do
+      json = api_call(:get, "/api/v1/courses.json",
+                      { :controller => 'courses', :action => 'index', :format => 'json' },
+                      { :state => ['available'] })
+      json.collect{ |c| c['id'].to_i }.sort.should == [@course1.id, @course2.id].sort
+      json.collect{ |c| c['workflow_state']}.each do |s|
+        %w{available}.should include(s)
+      end
+    end
+
+    it "should return only courses with state unpublished on ?state[]=unpublished" do
+      json = api_call(:get, "/api/v1/courses.json",
+                      { :controller => 'courses', :action => 'index', :format => 'json' },
+                      { :state => ['unpublished'] })
+      json.collect{ |c| c['id'].to_i }.sort.should == [@course3.id,@course4.id].sort
+      json.collect{ |c| c['workflow_state']}.each do |s|
+        %w{unpublished}.should include(s)
+      end
+    end
+
+    it "should return only courses with state unpublished and available on ?state[]=unpublished, available" do
+      json = api_call(:get, "/api/v1/courses.json",
+                      { :controller => 'courses', :action => 'index', :format => 'json' },
+                      { :state => ['unpublished','available'] })
+      json.collect{ |c| c['id'].to_i }.sort.should == [@course1.id, @course2.id, @course3.id, @course4.id].sort
+      json.collect{ |c| c['workflow_state']}.each do |s|
+        %w{available unpublished}.should include(s)
+      end
+    end
+
+    it "should return courses by custom role and state unpublished" do
+      json = api_call(:get, "/api/v1/courses.json?enrollment_role=SuperTeacher",
+                      { :controller => 'courses', :action => 'index', :format => 'json', :enrollment_role => 'SuperTeacher' },
+                      { :state => ['unpublished'] })
+      json.collect{ |c| c['id'].to_i }.should == [@course3.id]
+      json[0]['enrollments'].should == [{ 'type' => 'teacher', 'role' => 'SuperTeacher' }]
+      json.collect{ |c| c['workflow_state']}.each do |s|
+        %w{unpublished}.should include(s)
+      end
+    end
+
+    it "should not return courses with StudentEnrollment or ObserverEnrollment when state[] param" do
+      @course4.enrollments.each do |e|
+        e.type = 'StudentEnrollment'
+        e.save
+      end
+      json = api_call(:get, "/api/v1/courses.json",
+                      { :controller => 'courses', :action => 'index', :format => 'json' },
+                      { :state => ['unpublished'] })
+      json.collect{ |c| c['id'].to_i }.sort.should ==[@course3.id]
+
+      @course3.enrollments.each do |e|
+        e.type = 'ObserverEnrollment'
+        e.save
+      end
+      json = api_call(:get, "/api/v1/courses.json",
+                      { :controller => 'courses', :action => 'index', :format => 'json' },
+                      { :state => ['unpublished'] })
+      json.collect{ |c| c['id'].to_i }.should ==[]
+    end
+  end
+
+  describe "/students" do
     it "should return the list of students for the course" do
       first_user = @user
       new_user = User.create!(:name => 'Zombo')
@@ -1337,6 +1450,22 @@ describe CoursesController, :type => :integration do
         'public_syllabus' => @course1.public_syllabus,
         'workflow_state' => @course1.workflow_state,
       }
+    end
+
+    it "should map 'created' to 'unpublished'" do
+      @course1.workflow_state = 'created'
+      @course1.save!
+      json = api_call(:get, "/api/v1/courses/#{@course1.id}.json",
+              { :controller => 'courses', :action => 'show', :id => @course1.to_param, :format => 'json' })
+      json['workflow_state'].should == 'unpublished'
+    end
+
+    it "should map 'claimed' to 'unpublished'" do
+      @course1.workflow_state = 'claimed'
+      @course1.save!
+      json = api_call(:get, "/api/v1/courses/#{@course1.id}.json",
+              { :controller => 'courses', :action => 'show', :id => @course1.to_param, :format => 'json' })
+      json['workflow_state'].should == 'unpublished'
     end
 
     it "should allow sis id in hex packed format" do

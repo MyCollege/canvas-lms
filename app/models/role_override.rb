@@ -485,6 +485,17 @@ class RoleOverride < ActiveRecord::Base
         ], 
         :true_for => [ 'AccountAdmin' ]
       },
+      :view_notifications => {
+        :label => lambda { t('permissions.view_notifications', "View notifications") },
+        :admin_tool => true,
+        :account_only => true,
+        :available_to => [
+          'AccountAdmin',
+          'AccountMembership'
+        ],
+        :true_for => [],
+        :account_allows => lambda {|acct| acct.settings[:admins_can_view_notifications]}
+      },
       :read_question_banks => {
         :label => lambda { t('permissions.read_question_banks', "View and link to question banks") },
         :available_to => [
@@ -703,6 +714,7 @@ class RoleOverride < ActiveRecord::Base
         :label => lambda { t('permissions.manage_frozen_assignment', "Manage (edit / delete) frozen assignments") },
         :true_for => %w(AccountAdmin),
         :available_to => %w(AccountAdmin AccountMembership),
+        :enabled_for_plugin => :assignment_freezer
       }
     })
 
@@ -715,6 +727,9 @@ class RoleOverride < ActiveRecord::Base
     permissions.reject!{ |k, p| p[:account_only] == :site_admin } unless context.site_admin?
     permissions.reject!{ |k, p| p[:account_only] == :root } unless context.root_account?
     permissions.reject!{ |k, p| !p[:available_to].include?(base_role_type)} unless base_role_type.nil?
+    permissions.reject!{ |k, p| p[:account_allows] && !p[:account_allows].call(context)}
+    permissions.reject!{ |k, p| p[:enabled_for_plugin] &&
+      !((plugin = Canvas::Plugin.find(p[:enabled_for_plugin])) && plugin.enabled?)}
     permissions
   end
 
@@ -788,9 +803,14 @@ class RoleOverride < ActiveRecord::Base
       raise ArgumentError.new("Invalid base_role #{base_role}")
     end
     default_data = self.permissions[permission]
+    # Determine if the permission is able to be used for the account. A non-setting is 'true'.
+    # Execute linked proc if given.
+    account_allows = !!(default_data[:account_allows].nil? || (default_data[:account_allows].respond_to?(:call) &&
+        default_data[:account_allows].call(role_context.root_account)))
     generated_permission = {
+      :account_allows => account_allows,
       :permission =>  default_data,
-      :enabled    =>  default_data[:true_for].include?(base_role) ? [:self, :descendants] : nil,
+      :enabled    =>  account_allows && (default_data[:true_for].include?(base_role) ? [:self, :descendants] : false),
       :locked     => !default_data[:available_to].include?(base_role),
       :readonly   => !default_data[:available_to].include?(base_role),
       :explicit   => false,

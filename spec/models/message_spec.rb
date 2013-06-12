@@ -33,12 +33,24 @@ describe Message do
 
   describe '#populate body' do
     it 'should save an html body if a template exists' do
-      Message.any_instance.expects(:load_html_template).returns('template')
+      Message.any_instance.expects(:apply_html_template).returns('template')
       user         = user(:active_all => true)
       account_user = AccountUser.create!(:account => account_model, :user => user)
       message      = generate_message(:account_user_notification, :email, account_user)
 
       message.html_body.should == 'template'
+    end
+
+    it 'should sanitize html' do
+      Message.any_instance.expects(:load_html_template).returns <<-ZOMGXSS
+        <b>Your content</b>: <%= "<script>alert('haha')</script>" %>
+      ZOMGXSS
+      user         = user(:active_all => true)
+      account_user = AccountUser.create!(:account => account_model, :user => user)
+      message      = generate_message(:account_user_notification, :email, account_user)
+
+      message.html_body.should_not include "<script>"
+      message.html_body.should include "<b>Your content</b>: &lt;script&gt;alert(&#39;haha&#39;)&lt;/script&gt;"
     end
   end
 
@@ -138,5 +150,21 @@ describe Message do
         @message.deliver.should == false
       end
     end
+
+    describe "infer_defaults" do
+      it "should not break if there is no context" do
+        message_model.root_account_id.should be_nil
+      end
+
+      it "should not break if the context does not have an account" do
+        user_model
+        message_model(:context => @user).root_account_id.should be_nil
+      end
+
+      it "should populate root_account_id if the context can chain back to a root account" do
+        message_model(:context => course_model).root_account_id.should eql Account.default.id
+      end
+    end
+
   end
 end

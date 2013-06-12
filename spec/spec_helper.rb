@@ -28,6 +28,7 @@ else
 end
 require 'webrat'
 require 'mocha/api'
+require File.expand_path(File.dirname(__FILE__) + '/mocha_rspec_adapter')
 require File.expand_path(File.dirname(__FILE__) + '/mocha_extensions')
 
 Dir.glob("#{File.dirname(__FILE__).gsub(/\\/, "/")}/factories/*.rb").each { |file| require file }
@@ -111,16 +112,13 @@ Spec::Matchers.define :encompass do |expected|
   end
 end
 
-module MochaRspecAdapter
-  include Mocha::API
-  def setup_mocks_for_rspec
-    mocha_setup
+Spec::Matchers.define :match_ignoring_whitespace do |expected|
+  def whitespaceless(str)
+    str.gsub(/\s+/, '')
   end
-  def verify_mocks_for_rspec
-    mocha_verify
-  end
-  def teardown_mocks_for_rspec
-    mocha_teardown
+
+  match do |actual|
+    whitespaceless(actual) == whitespaceless(expected)
   end
 end
 
@@ -131,7 +129,6 @@ Spec::Runner.configure do |config|
   config.use_transactional_fixtures = true
   config.use_instantiated_fixtures  = false
   config.fixture_path = Rails.root+'spec/fixtures/'
-  config.mock_with MochaRspecAdapter
 
   config.include Webrat::Matchers, :type => :views
 
@@ -655,6 +652,21 @@ Spec::Runner.configure do |config|
     mo.save!
   end
 
+  def message(opts={})
+    m = Message.new
+    m.to = opts[:to] || 'some_user'
+    m.from = opts[:from] || 'some_other_user'
+    m.subject = opts[:subject] || 'a message for you'
+    m.body = opts[:body] || 'nice body'
+    m.sent_at = opts[:sent_at] || 5.days.ago
+    m.workflow_state = opts[:workflow_state] || 'sent'
+    m.user_id = opts[:user_id] || opts[:user].try(:id)
+    m.path_type = opts[:path_type] || 'email'
+    m.root_account_id = opts[:account_id] || Account.default.id
+    m.save!
+    m
+  end
+
   def assert_status(status=500)
     response.status.to_i.should eql(status)
   end
@@ -957,9 +969,7 @@ Spec::Runner.configure do |config|
     # now extract the headers
     post_headers = post_lines[1..post_lines.index("")]
     expected_post_headers = expected_post_lines[1..expected_post_lines.index("")]
-    if RUBY_VERSION >= "1.9."
-      expected_post_headers << "User-Agent: Ruby"
-    end
+    expected_post_headers << "User-Agent: Ruby"
     post_headers.sort.should == expected_post_headers.sort
 
     # now check payload

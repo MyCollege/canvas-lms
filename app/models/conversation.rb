@@ -23,6 +23,7 @@ class Conversation < ActiveRecord::Base
 
   has_many :conversation_participants, :dependent => :destroy
   has_many :conversation_messages, :order => "created_at DESC, id DESC", :dependent => :delete_all
+  has_many :conversation_message_participants, :through => :conversation_messages
   has_one :stream_item, :as => :asset
 
   # see also MessageableUser
@@ -46,7 +47,7 @@ class Conversation < ActiveRecord::Base
 
   def self.private_hash_for(users_or_user_ids)
     if (users_or_user_ids.first.is_a?(User))
-      user_ids = Shard.default.activate { users_or_user_ids.map(&:id) }
+      user_ids = Shard.birth.activate { users_or_user_ids.map(&:id) }
     else
       user_ids = users_or_user_ids
     end
@@ -272,7 +273,7 @@ class Conversation < ActiveRecord::Base
       new_tags = options[:tags] ? options[:tags] & current_context_strings(1) : []
       new_tags = current_context_strings if new_tags.blank? && tags.empty? # i.e. we're creating the first message and there are no tags yet
       self.tags |= new_tags if new_tags.present?
-      Shard.default.activate do
+      Shard.birth.activate do
         self.root_account_ids |= [message.root_account_id] if message.root_account_id
       end
       options[:root_account_ids] = read_attribute(:root_account_ids) if self.root_account_ids_changed?
@@ -348,7 +349,13 @@ class Conversation < ActiveRecord::Base
           next unless cp.user
           new_tags, message_tags = infer_new_tags_for(cp, all_new_tags)
           if new_tags.present?
-            cp.update_attribute :tags, cp.tags | new_tags
+            updated_tags = if (active_tags = cp.user.conversation_context_codes(false)).present?
+              (cp.tags | new_tags) & active_tags
+            else
+              cp.tags | new_tags
+            end
+
+            cp.update_attribute(:tags, updated_tags)
             if cp.user.shard != self.shard
               cp.user.shard.activate do
                 ConversationParticipant.where(:conversation_id => self, :user_id => cp.user_id).update_all(:tags => serialized_tags(cp.tags))
@@ -368,25 +375,23 @@ class Conversation < ActiveRecord::Base
     end
   end
 
-  def infer_new_tags_for(cp, all_new_tags)
-    new_tags = []
-    if all_new_tags.present?
-      # limit it to what they can see
-      new_tags = all_new_tags & cp.user.conversation_context_codes
-    end
-    # if they don't have any tags yet (e.g. this is the first message) and
-    # there are no new tags, just get the best possible match(es)
-    if new_tags.empty? && cp.tags.empty?
-      new_tags = current_context_strings & cp.user.conversation_context_codes
+  def infer_new_tags_for(participant, all_new_tags)
+    active_tags   = participant.user.conversation_context_codes(false)
+    context_codes = active_tags.present? ? active_tags : participant.user.conversation_context_codes
+    visible_codes = all_new_tags & context_codes
+
+    new_tags = if visible_codes.present?
+      # limit available codes to codes the user can see
+      visible_codes
+    else
+      # otherwise, use all of the available tags.
+      current_context_strings & context_codes
     end
 
-    # see ConversationParticipant#update_cached_data ... tags are only
-    # recomputed for private conversations, so for group ones we don't bother
-    # tracking at the message level
-    message_tags = if private?
+    message_tags = if self.private?
       if new_tags.present?
         new_tags
-      elsif cp.message_count > 0 and last_message = cp.last_message
+      elsif participant.message_count > 0 and last_message = participant.last_message
         last_message.tags
       end
     end
@@ -491,7 +496,7 @@ class Conversation < ActiveRecord::Base
   def regenerate_private_hash!(user_ids = nil)
     return unless private?
     self.private_hash = Conversation.private_hash_for(user_ids ||
-      Shard.default.activate { self.conversation_participants.map(&:user_id) } )
+      Shard.birth.activate { self.conversation_participants.map(&:user_id) } )
     return unless private_hash_changed?
     existing = self.shard.activate do
       ConversationParticipant.find_by_private_hash(private_hash).try(:conversation)
@@ -664,10 +669,16 @@ class Conversation < ActiveRecord::Base
       value > threshold
     }.sort_by(&:last).map(&:first).reverse
   end
-  memoize :current_context_strings
 
   def associated_shards
     [Shard.default]
+  end
+
+  def delete_for_all
+    stream_item.destroy_stream_item_instances
+    # bare scoped call avoid Rails 2 HasManyAssociation loading all objects
+    shard.activate { conversation_message_participants.scoped.delete_all }
+    conversation_participants.with_each_shard { |scope| scope.scoped.delete_all; nil }
   end
 
   protected

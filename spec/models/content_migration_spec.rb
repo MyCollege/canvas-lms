@@ -271,19 +271,46 @@ describe ContentMigration do
       page_to.body.should == body % [@copy_to.id, tag_to.id]
     end
 
-    it "should copy unpublished modules" do
-      cm = @copy_from.context_modules.create!(:name => "some module")
-      cm.publish
-      cm2 = @copy_from.context_modules.create!(:name => "another module")
-      cm2.unpublish
+    context "unpublished items" do
+      it "should copy unpublished modules" do
+        cm = @copy_from.context_modules.create!(:name => "some module")
+        cm.publish
+        cm2 = @copy_from.context_modules.create!(:name => "another module")
+        cm2.unpublish
 
-      run_course_copy
+        run_course_copy
 
-      @copy_to.context_modules.count.should == 2
-      cm_2 = @copy_to.context_modules.find_by_migration_id(mig_id(cm))
-      cm_2.workflow_state.should == 'active'
-      cm2_2 = @copy_to.context_modules.find_by_migration_id(mig_id(cm2))
-      cm2_2.workflow_state.should == 'unpublished'
+        @copy_to.context_modules.count.should == 2
+        cm_2 = @copy_to.context_modules.find_by_migration_id(mig_id(cm))
+        cm_2.workflow_state.should == 'active'
+        cm2_2 = @copy_to.context_modules.find_by_migration_id(mig_id(cm2))
+        cm2_2.workflow_state.should == 'unpublished'
+      end
+
+      it "should copy links to unpublished items in modules" do
+        mod1 = @copy_from.context_modules.create!(:name => "some module")
+        page = @copy_from.wiki.wiki_pages.create(:title => "some page")
+        page.workflow_state = :unpublished
+        page.save!
+        mod1.add_item({:id => page.id, :type => 'wiki_page'})
+
+        run_course_copy
+
+        mod1_copy = @copy_to.context_modules.find_by_migration_id(mig_id(mod1))
+        mod1_copy.content_tags.count.should == 1
+        mod1_copy.content_tags.first.content #todo
+      end
+
+      it "should copy unpublised wiki pages" do
+        wiki = @copy_from.wiki.wiki_pages.create(:title => "wiki", :body => "ohai")
+        wiki.workflow_state = :unpublished
+        wiki.save!
+
+        run_course_copy
+
+        wiki2 = @copy_to.wiki.wiki_pages.find_by_migration_id(mig_id(wiki))
+        wiki2.workflow_state.should == 'unpublished'
+      end
     end
 
     it "should find and fix wiki links by title or id" do
@@ -767,6 +794,18 @@ describe ContentMigration do
       bank2.assessment_questions.size.should == 2
     end
 
+    it "should copy discussion topic attributes" do
+      topic = @copy_from.discussion_topics.create!(:title => "topic", :message => "<p>bloop</p>", :discussion_type => "threaded")
+
+      run_course_copy
+
+      @copy_to.discussion_topics.count.should == 1
+      new_topic = @copy_to.discussion_topics.first
+
+      attrs = ["title", "message", "discussion_type", "type"]
+      topic.attributes.slice(*attrs).should == new_topic.attributes.slice(*attrs)
+    end
+
     it "should copy a discussion topic when assignment is selected" do
       topic = @copy_from.discussion_topics.build(:title => "topic")
       assignment = @copy_from.assignments.build(:submission_types => 'discussion_topic', :title => topic.title)
@@ -829,7 +868,7 @@ describe ContentMigration do
     def create_rubric_asmnt
       @rubric = @copy_from.rubrics.new
       @rubric.title = "Rubric"
-      @rubric.data = [{:ratings=>[{:criterion_id=>"309_6312", :points=>5, :description=>"Full Marks", :id=>"blank", :long_description=>""}, {:criterion_id=>"309_6312", :points=>0, :description=>"No Marks", :id=>"blank_2", :long_description=>""}], :points=>5, :description=>"Description of criterion", :id=>"309_6312", :long_description=>""}]
+      @rubric.data = [{:ratings=>[{:criterion_id=>"309_6312", :points=>5.5, :description=>"Full Marks", :id=>"blank", :long_description=>""}, {:criterion_id=>"309_6312", :points=>0, :description=>"No Marks", :id=>"blank_2", :long_description=>""}], :points=>5.5, :description=>"Description of criterion", :id=>"309_6312", :long_description=>""}]
       @rubric.save!
 
       @assignment = @copy_from.assignments.create!(:title => "some assignment", :points_possible => 12)
@@ -848,6 +887,16 @@ describe ContentMigration do
 
       rub = @copy_to.rubrics.find_by_migration_id(mig_id(@rubric))
       rub.should_not be_nil
+
+      [:description, :id, :points].each do |k|
+        rub.data.first[k].should == @rubric.data.first[k]
+      end
+      [:criterion_id, :description, :id, :points].each do |k|
+        rub.data.first[:ratings].each_with_index do |criterion, i|
+          criterion[k].should == @rubric.data.first[:ratings][i][k]
+        end
+      end
+
       asmnt2 = @copy_to.assignments.find_by_migration_id(mig_id(@assignment))
       asmnt2.rubric.id.should == rub.id
       asmnt2.rubric_association.use_for_grading.should == true
@@ -1260,7 +1309,7 @@ describe ContentMigration do
       bank.assessment_questions.count.should == 1
       aq = bank.assessment_questions.first
 
-      aq.question_data['question_text'].should == @question.question_data['question_text']
+      aq.question_data['question_text'].should match_ignoring_whitespace(@question.question_data['question_text'])
     end
 
     it "should correctly copy quiz question html file references" do
@@ -1304,8 +1353,8 @@ equation: <img class="equation_image" title="Log_216" src="/equation_images/Log_
 
       q_to = @copy_to.quizzes.first
       qq_to = q_to.quiz_questions.first
-      qq_to.question_data[:question_text].should == qtext % [@copy_to.id, att_2.id, @copy_to.id, "files/#{att2_2.id}/preview", @copy_to.id, "files/#{att4_2.id}/preview"]
-      qq_to.question_data[:answers][0][:html].should == %{File ref:<img src="/courses/#{@copy_to.id}/files/#{att3_2.id}/download">}
+      qq_to.question_data[:question_text].should match_ignoring_whitespace(qtext % [@copy_to.id, att_2.id, @copy_to.id, "files/#{att2_2.id}/preview", @copy_to.id, "files/#{att4_2.id}/preview"])
+      qq_to.question_data[:answers][0][:html].should match_ignoring_whitespace(%{File ref:<img src="/courses/#{@copy_to.id}/files/#{att3_2.id}/download">})
     end
 
     it "should copy all html fields in assessment questions" do
@@ -1355,6 +1404,39 @@ equation: <img class="equation_image" title="Log_216" src="/equation_images/Log_
       aq.question_data[:answers][0][:left_html].should == data2[:answers][0][:left_html]
       aq.question_data[:answers][1][:html].should == data2[:answers][1][:html]
       aq.question_data[:answers][1][:left_html].should == data2[:answers][1][:left_html]
+    end
+
+    it "should copy file_upload_questions" do
+      pending unless Qti.qti_enabled?
+      bank = @copy_from.assessment_question_banks.create!(:title => 'Test Bank')
+      data = {:question_type => "file_upload_question",
+              :points_possible => 10,
+              :question_text => "<strong>html for fun</strong>"
+              }.with_indifferent_access
+      bank.assessment_questions.create!(:question_data => data)
+
+      q = @copy_from.quizzes.create!(:title => "survey pub", :quiz_type => "survey")
+      q.quiz_questions.create!(:question_data => data)
+      q.generate_quiz_data
+      q.published_at = Time.now
+      q.workflow_state = 'available'
+      q.save!
+
+      run_course_copy
+
+      @copy_to.assessment_questions.count.should == 2
+      @copy_to.assessment_questions.each do |aq|
+        aq.question_data['question_type'].should == data[:question_type]
+        aq.question_data['question_text'].should == data[:question_text]
+      end
+
+      @copy_to.quizzes.count.should == 1
+      quiz = @copy_to.quizzes.first
+      quiz.quiz_questions.count.should == 1
+
+      qq = quiz.quiz_questions.first
+      qq.question_data['question_type'].should == data[:question_type]
+      qq.question_data['question_text'].should == data[:question_text]
     end
 
     it "should import calendar events" do
@@ -1613,12 +1695,10 @@ equation: <img class="equation_image" title="Log_216" src="/equation_images/Log_
         tool.user_navigation.should == @tool_from.user_navigation
       end
     end
-
   end
 
   context "#prepare_data" do
     it "should strip invalid utf8" do
-      pending("Ruby 1.9 only") if RUBY_VERSION < "1.9"
       data = {
         'assessment_questions' => [{
           'question_name' => "hai\xfbabcd"
@@ -1672,6 +1752,11 @@ equation: <img class="equation_image" title="Log_216" src="/equation_images/Log_
       @cm.import_object?("content_migrations", CC::CCHelper.create_key(@cm)).should == true
     end
 
+  end
+  
+  it "should exclude user-hidden migration plugins" do
+    ab = Canvas::Plugin.find(:academic_benchmark_importer)
+    ContentMigration.migration_plugins(true).include?(ab).should be_false
   end
 
 end

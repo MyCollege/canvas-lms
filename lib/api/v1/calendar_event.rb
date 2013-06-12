@@ -57,7 +57,9 @@ module Api::V1::CalendarEvent
 
     hash["child_events_count"] = event.child_events.size
     hash['parent_event_id'] = event.parent_calendar_event_id
-    hash['hidden'] = event.hidden?
+    # events are hidden when section-specific events override them
+    # but if nobody is logged in, no sections apply, so show the base event
+    hash['hidden'] = user ? event.hidden? : false
 
     if include.include?('participants')
       if event.context_type == 'User'
@@ -107,7 +109,7 @@ module Api::V1::CalendarEvent
 
     can_read = event.grants_right?(user, session, :read)
     hash['url'] = api_v1_calendar_event_url(event) if options.has_key?(:url_override) ? options[:url_override] || hash['own_reservation'] : can_read
-    hash['html_url'] = calendar_url_for(event.effective_context, :event => event) if user && can_read
+    hash['html_url'] = calendar_url_for(event.effective_context, :event => event)
     hash
   end
 
@@ -119,7 +121,7 @@ module Api::V1::CalendarEvent
     hash['context_code'] = assignment.context_code
     hash['start_at'] = hash['end_at'] = assignment.due_at
     hash['url'] = api_v1_calendar_event_url("assignment_#{assignment.id}")
-    hash['html_url'] = hash['assignment']['html_url'] if user && hash['assignment'].include?('html_url')
+    hash['html_url'] = hash['assignment']['html_url'] if hash['assignment'].include?('html_url')
     if assignment.applied_overrides.present?
       hash['assignment_overrides'] = assignment.applied_overrides.map { |o| assignment_override_json(o) }
     end

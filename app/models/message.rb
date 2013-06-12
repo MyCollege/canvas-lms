@@ -37,7 +37,7 @@ class Message < ActiveRecord::Base
 
   attr_accessible :to, :from, :subject, :body, :delay_for, :context, :path_type,
     :from_name, :sent_at, :notification, :user, :communication_channel,
-    :notification_name, :asset_context, :data
+    :notification_name, :asset_context, :data, :root_account_id
 
   attr_writer :delayed_messages
 
@@ -181,6 +181,13 @@ class Message < ActiveRecord::Base
   end
   alias_method_chain :polymorphic_url, :context_host
 
+  # the hostname for user-specific links (e.g. setting notification prefs).
+  # may be different from the asset/context host
+  def primary_host
+    primary_context = user.pseudonym.try(:account)
+    primary_context ||= context.respond_to?(:context) ? context.context : context
+    HostUrl.context_host primary_context
+  end
 
   # Internal: Store any transmission errors in the database to help with later
   # debugging.
@@ -299,23 +306,27 @@ class Message < ActiveRecord::Base
     self.notification.name.parameterize.underscore + "." + path_type + ".erb"
   end
 
-  # Public: Load an HTML email template for this message.
+  # Public: Apply an HTML email template to this message.
   #
   # _binding - The binding to attach to the template.
   #
-  # Returns a template string (or nil).
-  def load_html_template(_binding)
-    html_file = template_filename('email.html')
-    html_path = Canvas::MessageHelper.find_message_path(html_file)
-    return nil unless File.exist?(html_path)
+  # Returns an HTML template (or nil).
+  def apply_html_template(_binding)
+    return nil unless template = load_html_template
 
     # Add the attribute 'inner_html' with the value of inner_html into the _binding
-    inner_html = Erubis::Eruby.new(File.read(html_path), :bufvar => '@output_buffer').result(_binding)
+    inner_html = RailsXss::Erubis.new(template, :bufvar => '@output_buffer').result(_binding)
     setter = eval "inner_html = nil; lambda { |v| inner_html = v }", _binding
     setter.call(inner_html)
 
     layout_path = Canvas::MessageHelper.find_message_path('_layout.email.html.erb')
-    Erubis::Eruby.new(File.read(layout_path)).result(_binding)
+    RailsXss::Erubis.new(File.read(layout_path)).result(_binding)
+  end
+
+  def load_html_template
+    html_file = template_filename('email.html')
+    html_path = Canvas::MessageHelper.find_message_path(html_file)
+    File.read(html_path) if File.exist?(html_path)
   end
 
   # Public: Assign the body, subject and url to the message.
@@ -334,13 +345,13 @@ class Message < ActiveRecord::Base
     else
       self.body = Erubis::Eruby.new(message_body_template,
         :bufvar => '@output_buffer').result(_binding)
-      self.html_body = load_html_template(_binding) if path_type == 'email'
+      self.html_body = apply_html_template(_binding) if path_type == 'email'
     end
 
     # Append a footer to the body if the path type is email
     if path_type == 'email'
       raw_footer_message = File.read(Canvas::MessageHelper.find_message_path('_email_footer.email.erb'))
-      footer_message = Erubis::Eruby.new(raw_footer_message, :bufvar => "@output_buffer").result(b) rescue nil
+      footer_message = Erubis::Eruby.new(raw_footer_message, :bufvar => "@output_buffer").result(_binding)
       if footer_message.present?
         self.body = <<-END.strip_heredoc
           #{self.body}
@@ -478,10 +489,10 @@ class Message < ActiveRecord::Base
     current_context                 = context
 
     until current_context.respond_to?(:root_account) do
+      return nil if unbounded_loop_paranoia_counter <= 0 || current_context.nil?
+      return nil unless current_context.respond_to?(:context)
       current_context = current_context.context
       unbounded_loop_paranoia_counter -= 1
-
-      return nil if unbounded_loop_paranoia_counter <= 0 || context.nil?
     end
 
     current_context.root_account
@@ -502,7 +513,10 @@ class Message < ActiveRecord::Base
 
     self.to_email  = true if %w[email sms].include?(path_type)
 
-    self.from_name = context_root_account.settings[:outgoing_email_default_name] rescue nil
+    root_account = context_root_account
+    self.root_account_id ||= root_account.try(:id)
+
+    self.from_name = root_account.settings[:outgoing_email_default_name] rescue nil
     self.from_name = HostUrl.outgoing_email_default_name if from_name.blank?
     self.from_name = asset_context.name if (asset_context &&
       !asset_context.is_a?(Account) && asset_context.name &&
@@ -566,6 +580,14 @@ class Message < ActiveRecord::Base
     nil
   end
 
+  # Public: Return the message as JSON filtered to selected fields and
+  # flattened appropriately.
+  #
+  # Returns json hash.
+  def as_json(options = {})
+    super(:only => [:id, :created_at, :sent_at, :workflow_state, :from, :to, :reply_to, :subject, :body, :html_body])['message']
+  end
+
   protected
   # Internal: Deliver the message through email.
   #
@@ -616,6 +638,8 @@ class Message < ActiveRecord::Base
   def deliver_via_chat; end
 
   # Internal: Deliver the message through Twitter.
+  #
+  # The template should define the content for :link and not place into the body of the template itself
   #
   # Returns nothing.
   def deliver_via_twitter

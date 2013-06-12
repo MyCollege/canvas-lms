@@ -201,20 +201,39 @@ class ApplicationController < ActionController::Base
   end
 
   def tab_enabled?(id)
-    if @context && @context.respond_to?(:tabs_available) && !@context.tabs_available(@current_user, :session => session, :include_hidden_unused => true, :root_account => @domain_root_account).any?{|t| t[:id] == id }
-      if @context.is_a?(Account)
-        flash[:notice] = t "#application.notices.page_disabled_for_account", "That page has been disabled for this account"
-      elsif @context.is_a?(Course)
-        flash[:notice] = t "#application.notices.page_disabled_for_course", "That page has been disabled for this course"
-      elsif @context.is_a?(Group)
-        flash[:notice] = t "#application.notices.page_disabled_for_group", "That page has been disabled for this group"
-      else
-        flash[:notice] = t "#application.notices.page_disabled", "That page has been disabled"
-      end
-      redirect_to named_context_url(@context, :context_url)
-      return false
+    return true unless @context && @context.respond_to?(:tabs_available)
+    tabs = @context.tabs_available(@current_user,
+                                   :session => session,
+                                   :include_hidden_unused => true,
+                                   :root_account => @domain_root_account)
+    valid = tabs.any?{|t| t[:id] == id }
+    render_tab_disabled unless valid
+    return valid
+  end
+
+  def render_tab_disabled
+    msg = tab_disabled_message(@context)
+    respond_to do |format|
+      format.html {
+        flash[:notice] = msg
+        redirect_to named_context_url(@context, :context_url)
+      }
+      format.json {
+        render :json => { :message => msg }, :status => :not_found
+      }
     end
-    true
+  end
+
+  def tab_disabled_message(context)
+    if context.is_a?(Account)
+      t "#application.notices.page_disabled_for_account", "That page has been disabled for this account"
+    elsif context.is_a?(Course)
+      t "#application.notices.page_disabled_for_course", "That page has been disabled for this course"
+    elsif context.is_a?(Group)
+      t "#application.notices.page_disabled_for_group", "That page has been disabled for this group"
+    else
+      t "#application.notices.page_disabled", "That page has been disabled"
+    end
   end
 
   def require_password_session
@@ -271,7 +290,7 @@ class ApplicationController < ActionController::Base
       @headers = !!@current_user if @headers != false
       @files_domain = @account_domain && @account_domain.host_type == 'files'
       format.html {
-        store_location if request.get?
+        store_location
         return if !@current_user && initiate_delegated_login(request.host_with_port)
         if @context.is_a?(Course) && @context_enrollment
           start_date = @context_enrollment.enrollment_dates.map(&:first).compact.min if @context_enrollment.state_based_on_date == :inactive
@@ -319,18 +338,7 @@ class ApplicationController < ActionController::Base
     return @context != nil
   end
 
-  def clean_return_to(url)
-    return nil if url.blank?
-    uri = URI.parse(url)
-    return nil unless uri.path[0] == ?/
-    return "#{request.protocol}#{request.host_with_port}#{uri.path}#{uri.query && "?#{uri.query}"}#{uri.fragment && "##{uri.fragment}"}"
-  end
   helper_method :clean_return_to
-
-  def return_to(url, fallback)
-    url = clean_return_to(url) || clean_return_to(fallback)
-    redirect_to url
-  end
 
   MAX_ACCOUNT_LINEAGE_TO_SHOW_IN_CRUMBS = 3
 
@@ -402,9 +410,6 @@ class ApplicationController < ActionController::Base
         @context = @current_user
         @context_membership = @context
       end
-      if @context.try_rescue(:only_wiki_is_public) && params[:controller].match(/wiki/) && !@current_user && (!@context.is_a?(Course) || session[:enrollment_uuid_course_id] != @context.id)
-        @show_left_side = false
-      end
       if @context.is_a?(Account) && !@context.root_account?
         account_chain = @context.account_chain.to_a.select {|a| a.grants_right?(@current_user, session, :read) }
         account_chain.slice!(0) # the first element is the current context
@@ -441,8 +446,9 @@ class ApplicationController < ActionController::Base
       # we already know the user can read these courses and groups, so skip
       # the grants_right? check to avoid querying for the various memberships
       # again.
-      courses = @context.current_enrollments.select { |e| e.state_based_on_date == :active }.map(&:course).uniq
-      groups = include_groups ? @context.current_groups : []
+      courses = @context.current_enrollments.with_each_shard.select { |e| e.state_based_on_date == :active }.map(&:course).uniq
+      groups = include_groups ? @context.current_groups.with_each_shard.reject{|g| g.context_type == "Course" &&
+          (g.context.completed? || g.context.soft_concluded?)} : []
       if only_contexts.present?
         # find only those courses and groups passed in the only_contexts
         # parameter, but still scoped by user so we know they have rights to
@@ -450,7 +456,7 @@ class ApplicationController < ActionController::Base
         course_ids = only_contexts.select { |c| c.first == "Course" }.map(&:last)
         courses = course_ids.empty? ? [] : courses.select { |c| course_ids.include?(c.id) }
         group_ids = only_contexts.select { |c| c.first == "Group" }.map(&:last)
-        groups = group_ids.empty? ? [] : groups.find_all_by_id(group_ids) if include_groups
+        groups = group_ids.empty? ? [] : groups.select { |g| group_ids.include?(g.id) } if include_groups
       end
       @contexts.concat courses
       @contexts.concat groups
@@ -504,15 +510,23 @@ class ApplicationController < ActionController::Base
       @groups = @courses.first.assignment_groups.active.includes(:active_assignments)
       @assignments = @groups.map(&:active_assignments).flatten
     else
-      @groups = AssignmentGroup.for_context_codes(@context_codes).active
-      @assignments = Assignment.active.for_course(@courses.map(&:id))
+      assignments_and_groups = Shard.partition_by_shard(@courses) do |courses|
+        [[Assignment.active.for_course(courses).all,
+         AssignmentGroup.active.for_course(courses).order(:position).all]]
+      end
+      @assignments = assignments_and_groups.map(&:first).flatten
+      @groups = assignments_and_groups.map(&:last).flatten
     end
     @assignment_groups = @groups
 
     @courses.each { |course| log_course(course) }
 
-    @submissions = @current_user.try(:submissions).to_a
-    @submissions.each{ |s| s.mute if s.muted_assignment? }
+    if @current_user
+      @submissions = @current_user.submissions.with_each_shard
+      @submissions.each{ |s| s.mute if s.muted_assignment? }
+    else
+      @submissions = []
+    end
 
     @assignments.map! {|a| a.overridden_for(@current_user)}
     sorted = SortsAssignments.by_due_date({
@@ -786,13 +800,13 @@ class ApplicationController < ActionController::Base
   def rescue_action_in_public(exception)
     response_code = response_code_for_rescue(exception)
     begin
-      @status_code = interpret_status(response_code)
-      @status = @status_code
-      @status = 'AUT' if exception.is_a?(ActionController::InvalidAuthenticityToken)
+      status_code = interpret_status(response_code)
+      status = status_code
+      status = 'AUT' if exception.is_a?(ActionController::InvalidAuthenticityToken)
       type = 'default'
-      type = '404' if @status == '404 Not Found'
+      type = '404' if status == '404 Not Found'
 
-      @error = ErrorReport.log_exception(type, exception, {
+      error = ErrorReport.log_exception(type, exception, {
         :url => request.url,
         :user => @current_user,
         :user_agent => request.headers['User-Agent'],
@@ -803,22 +817,41 @@ class ApplicationController < ActionController::Base
       }.merge(ErrorReport.useful_http_env_stuff_from_request(request)))
 
       if api_request?
-        rescue_action_in_api(exception, @error)
+        rescue_action_in_api(exception, error)
       else
-        @headers = nil
-        session[:last_error_id] = @error.id rescue nil
-        if request.xhr? || request.format == :text
-          render :json => {:errors => {:base => "Unexpected error, ID: #{@error.id rescue "unknown"}"}, :status => @status}, :status => @status_code
-        else
-          @status = '500' unless File.exists?(File.join('app', 'views', 'shared', 'errors', "#{@status.to_s[0,3]}_message.html.erb"))
-          render :template => "shared/errors/#{@status.to_s[0, 3]}_message.html.erb", 
-            :layout => 'application', :status => @status, :locals => {:error => @error, :exception => exception, :status => @status}
-        end
+        render_rescue_action(exception, error, status, status_code)
       end
     rescue => e
       # error generating the error page? failsafe.
       render_optional_error_file response_code_for_rescue(exception)
       ErrorReport.log_exception(:default, e)
+    end
+  end
+
+  def render_rescue_action(exception, error, status, status_code)
+    clear_crumbs
+    @headers = nil
+    session[:last_error_id] = error.id rescue nil
+    if request.xhr? || request.format == :text
+      render :status => status_code, :json => {
+        :errors => {
+          :base => "Unexpected error, ID: #{error.id rescue "unknown"}"
+        },
+        :status => status
+      }
+    else
+      erbfile = "#{status.to_s[0,3]}_message.html.erb"
+      erbpath = File.join('app', 'views', 'shared', 'errors', erbfile)
+      erbfile = "500_message.html.erb" unless File.exists?(erbpath)
+      @status_code = status_code
+      render :template => "shared/errors/#{erbfile}", 
+        :layout => 'application',
+        :status => status,
+        :locals => {
+          :error => error,
+          :exception => exception,
+          :status => status
+        }
     end
   end
 
@@ -938,6 +971,13 @@ class ApplicationController < ActionController::Base
       :title => page_name.titleize,
       :url => page_name.to_url
     )
+    if @page.new_record?
+      if @domain_root_account.enable_draft?
+        @page.workflow_state = 'unpublished'
+      else
+        @page.workflow_state = 'active'
+      end
+    end
     if page_name == "front-page" && @page.new_record?
       @page.body = t "#application.wiki_front_page_default_content_course", "Welcome to your new course wiki!" if @context.is_a?(Course)
       @page.body = t "#application.wiki_front_page_default_content_group", "Welcome to your new group wiki!" if @context.is_a?(Group)
@@ -1273,9 +1313,19 @@ class ApplicationController < ActionController::Base
     super
   end
 
+  def destroy_session
+    @pseudonym_session.destroy rescue true
+    reset_session
+  end
+
+  def logout_current_user
+    @current_user.try(:stamp_logout_time!)
+    destroy_session
+  end
+
   def set_layout_options
     @embedded_view = params[:embedded]
-    @headers = false if params[:no_headers] || @embedded_view
+    @headers = false if params[:no_headers]
     (@body_classes ||= []) << 'embedded' if @embedded_view
   end
 
@@ -1369,7 +1419,7 @@ class ApplicationController < ActionController::Base
   def flash_notices
     @notices ||= begin
       notices = []
-      if !browser_supported? && !cookies['unsupported_browser_dismissed']
+      if !browser_supported? && !@embedded_view && !cookies['unsupported_browser_dismissed']
         notices << {:type => 'warning', :content => unsupported_browser, :classes => 'unsupported_browser'} 
       end
       if error = flash.delete(:error)

@@ -273,10 +273,12 @@ describe "announcements" do
     end
 
     it "should create a delayed announcement" do
+      pending("193")
       get course_announcements_path(@course)
       create_announcement_manual('input[type=checkbox][name=delay_posting]')
       f('.ui-datepicker-trigger').click
       datepicker_next
+      f('.ui-datepicker-time .ui-datepicker-ok').click
       expect_new_page_load { submit_form('.form-actions') }
       f('.discussion-fyi').should include_text('This topic will not be visible')
     end

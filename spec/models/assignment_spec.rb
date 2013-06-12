@@ -1169,16 +1169,20 @@ describe Assignment do
       </div>}
       assignment_model(:due_at => "Sep 3 2008 12:00am", :description => html)
       ev = @assignment.to_ics(false)
-      ev.description.should == "This assignment is due December 16th. Plz discuss the reading.\n  \n\n\n Test."
-      ev.x_alt_desc.should == html.strip
+      pending("assignment description disabled") do
+        ev.description.should == "This assignment is due December 16th. Plz discuss the reading.\n  \n\n\n Test."
+        ev.x_alt_desc.should == html.strip
+      end
     end
 
     it ".to_ics should run the description through api_user_content to translate links" do
       html = %{<a href="/calendar">Click!</a>}
       assignment_model(:due_at => "Sep 3 2008 12:00am", :description => html)
       ev = @assignment.to_ics(false)
-      ev.description.should == "[Click!](http://localhost/calendar)"
-      ev.x_alt_desc.should == %{<a href="http://localhost/calendar">Click!</a>}
+      pending("assignment description disabled") do
+        ev.description.should == "[Click!](http://localhost/calendar)"
+        ev.x_alt_desc.should == %{<a href="http://localhost/calendar">Click!</a>}
+      end
     end
 
     it ".to_ics should populate uid and summary fields" do
@@ -2466,6 +2470,23 @@ describe Assignment do
     it "should leave short titles alone" do
       @assignment.title = 'short title'
       @assignment.title_slug.should == @assignment.title
+    end
+  end
+
+  describe "external_tool_tag" do
+    it "should update the existing tag when updating the assignment" do
+      course
+      a = @course.assignments.create!(title: "test",
+                                      submission_types: 'external_tool',
+                                      external_tool_tag_attributes: {url: "http://example.com/launch"})
+      tag = a.external_tool_tag
+      tag.should_not be_new_record
+
+      a = Assignment.find(a.id)
+      a.attributes = {external_tool_tag_attributes: {url: "http://example.com/launch2"}}
+      a.save!
+      a.external_tool_tag.url.should == "http://example.com/launch2"
+      a.external_tool_tag.should == tag
     end
   end
 end

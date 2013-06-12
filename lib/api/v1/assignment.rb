@@ -47,7 +47,7 @@ module Api::V1::Assignment
     )
   }
 
-  def assignment_json(assignment, user, session,include_discussion_topic = true)
+  def assignment_json(assignment, user, session,include_discussion_topic = true,submission= nil)
     fields = assignment.new_record? ? API_ASSIGNMENT_NEW_RECORD_FIELDS : API_ALLOWED_ASSIGNMENT_OUTPUT_FIELDS
     hash = api_json(assignment, user, session, fields)
     hash['course_id'] = assignment.context_id
@@ -135,6 +135,10 @@ module Api::V1::Assignment
         user,
         session,
         !:include_assignment)
+    end
+
+    if submission
+      hash['submission'] = submission_json(submission,assignment,user,session)
     end
 
     hash
@@ -277,6 +281,10 @@ module Api::V1::Assignment
     end
 
     # TODO: allow rubric creation
+
+    if update_params.has_key?("description")
+      update_params["description"] = process_incoming_html_content(update_params["description"])
+    end
 
     assignment.updating_user = @current_user
     assignment.attributes = update_params

@@ -1028,7 +1028,7 @@ describe User do
   context "tabs_available" do
     it "should not include unconfigured external tools" do
       tool = Account.default.context_external_tools.new(:consumer_key => 'bob', :shared_secret => 'bob', :name => 'bob', :domain => "example.com")
-      tool.settings[:course_navigation] = {:url => "http://www.example.com", :text => "Example URL"}
+      tool.course_navigation = {:url => "http://www.example.com", :text => "Example URL"}
       tool.save!
       tool.has_user_navigation.should == false
       user_model
@@ -1038,7 +1038,7 @@ describe User do
 
     it "should include configured external tools" do
       tool = Account.default.context_external_tools.new(:consumer_key => 'bob', :shared_secret => 'bob', :name => 'bob', :domain => "example.com")
-      tool.settings[:user_navigation] = {:url => "http://www.example.com", :text => "Example URL"}
+      tool.user_navigation = {:url => "http://www.example.com", :text => "Example URL"}
       tool.save!
       tool.has_user_navigation.should == true
       user_model
@@ -2142,6 +2142,25 @@ describe User do
     end
   end
 
+  describe "manual_mark_as_read" do
+    let(:user) { User.new }
+    subject { user.manual_mark_as_read? }
+
+    context 'default' do
+      it { should be_false }
+    end
+
+    context 'after being set to true' do
+      before { user.stubs(preferences: { manual_mark_as_read: true }) }
+      it     { should be_true }
+    end
+
+    context 'after being set to false' do
+      before { user.stubs(preferences: { manual_mark_as_read: false }) }
+      it     { should be_false }
+    end
+  end
+
   describe "things excluded from json serialization" do
     it "excludes collkey" do
       # Ruby 1.9 does not like html that includes the collkey, so
@@ -2219,6 +2238,12 @@ describe User do
       @user.conversation_context_codes.should include(@course.asset_string)
     end
 
+    it "should optionally not include concluded courses" do
+      course_with_student(:user => @user, :active_all => true)
+      @enrollment.update_attribute(:workflow_state, 'completed')
+      @user.conversation_context_codes(false).should_not include(@course.asset_string)
+    end
+
     it "should include groups" do
       group_with_user(:user => @user, :active_all => true)
       @user.conversation_context_codes.should include(@group.asset_string)
@@ -2243,6 +2268,12 @@ describe User do
         @user.conversation_context_codes.should include(@course.asset_string)
       end
 
+      it "should optionally not include concluded courses on other shards" do
+        course_with_student(:account => @shard1_account, :user => @user, :active_all => true)
+        @enrollment.update_attribute(:workflow_state, 'completed')
+        @user.conversation_context_codes(false).should_not include(@course.asset_string)
+      end
+
       it "should include groups on other shards" do
         # course is just to associate the get shard1 in @user's associated shards
         course_with_student(:account => @shard1_account, :user => @user, :active_all => true)
@@ -2254,6 +2285,27 @@ describe User do
         course_with_student(:account => @shard1_account, :user => @user, :active_all => true)
         default_asset_string = @course.asset_string
         @shard1.activate{ @user.conversation_context_codes.should include(default_asset_string) }
+      end
+    end
+  end
+
+  describe "#stamp_logout_time!" do
+    before do
+      user_model
+    end
+
+    it "should update last_logged_out" do
+      now = Time.zone.now
+      Timecop.freeze(now) { @user.stamp_logout_time! }
+      @user.reload.last_logged_out.to_i.should == now.to_i
+    end
+
+    context "sharding" do
+      specs_require_sharding
+
+      it "should update regardless of current shard" do
+        @shard1.activate{ @user.stamp_logout_time! }
+        @user.reload.last_logged_out.should_not be_nil
       end
     end
   end

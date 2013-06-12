@@ -26,8 +26,12 @@ def attachment_model(opts={})
 end
   
 def valid_attachment_attributes(opts={})
-  @context ||= opts[:context] || Course.first || course_model(:reusable => true)
-  @folder = Folder.root_folders(@context).find{|f| f.name == 'unfiled'} || Folder.root_folders(@context).first || folder_model
+  @context = opts[:context] || @context
+  @context ||= Course.first || course_model(:reusable => true)
+  if @context.respond_to?(:folders)
+    @folder = Folder.root_folders(@context).find{|f| f.name == 'unfiled'} || Folder.root_folders(@context).first
+  end
+  @folder ||= folder_model
   @attributes_res = {
     :context => @context,
     :size => 100,
@@ -48,4 +52,9 @@ end
 
 def stub_png_data(filename = 'test my file? hai!&.png', data = nil)
   stub_file_data(filename, data, 'image/png')
+end
+
+def jpeg_data_frd
+  fixture_path = File.expand_path(File.dirname(__FILE__) + '/../fixtures/test_image.jpg')
+  ActionController::TestUploadedFile.new(fixture_path, 'image/jpeg', true)
 end

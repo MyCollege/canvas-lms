@@ -534,20 +534,20 @@ describe Api do
     it 'should return an array of numeric ids' do
       Api.map_non_sis_ids([1, 2, 3, 4]).should == [1, 2, 3, 4]
     end
-    
+
     it 'should convert string ids to numeric' do
       Api.map_non_sis_ids(%w{5 4 3 2}).should == [5, 4, 3, 2]
     end
-    
+
     it "should exclude things that don't look like ids" do
       Api.map_non_sis_ids(%w{1 2 lolrus 4chan 5 6!}).should == [1, 2, 5]
     end
-    
+
     it "should strip whitespace" do
       Api.map_non_sis_ids(["  1", "2  ", " 3 ", "4\n"]).should == [1, 2, 3, 4]
     end
   end
-  
+
   context ".api_user_content" do
     class T
       extend Api
@@ -559,6 +559,39 @@ describe Api do
 </div>}
       res = T.api_user_content(html, @course, @student)
       res.should == html
+    end
+  end
+
+  context ".process_incoming_html_content" do
+    class T
+      extend Api
+    end
+
+    it "should add context to files and remove verifier parameters" do
+      course
+      attachment_model(:context => @course)
+
+      html = %{<div>
+        Here are some bad links
+        <a href="/files/#{@attachment.id}/download">here</a>
+        <a href="/files/#{@attachment.id}/download?verifier=lollercopter&amp;anotherparam=something">here</a>
+        <a href="/files/#{@attachment.id}/preview?sneakyparam=haha&amp;verifier=lollercopter&amp;another=blah">here</a>
+        <a href="/courses/#{@course.id}/files/#{@attachment.id}/preview?noverifier=here">here</a>
+        <a href="/courses/#{@course.id}/files/#{@attachment.id}/download?verifier=lol&amp;a=1">here</a>
+        <a href="/courses/#{@course.id}/files/#{@attachment.id}/download?b=2&amp;verifier=something&amp;c=2">here</a>
+        <a href="/courses/#{@course.id}/files/#{@attachment.id}/notdownload?b=2&amp;verifier=shouldstay&amp;c=2">but not here</a>
+      </div>}
+      fixed_html = T.process_incoming_html_content(html)
+      fixed_html.should == %{<div>
+        Here are some bad links
+        <a href="/courses/#{@course.id}/files/#{@attachment.id}/download">here</a>
+        <a href="/courses/#{@course.id}/files/#{@attachment.id}/download?anotherparam=something">here</a>
+        <a href="/courses/#{@course.id}/files/#{@attachment.id}/preview?sneakyparam=haha&amp;another=blah">here</a>
+        <a href="/courses/#{@course.id}/files/#{@attachment.id}/preview?noverifier=here">here</a>
+        <a href="/courses/#{@course.id}/files/#{@attachment.id}/download?a=1">here</a>
+        <a href="/courses/#{@course.id}/files/#{@attachment.id}/download?b=2&amp;c=2">here</a>
+        <a href="/courses/#{@course.id}/files/#{@attachment.id}/notdownload?b=2&amp;verifier=shouldstay&amp;c=2">but not here</a>
+      </div>}
     end
   end
 

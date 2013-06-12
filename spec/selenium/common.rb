@@ -22,14 +22,21 @@ require "socket"
 require "timeout"
 require 'coffee-script'
 require File.expand_path(File.dirname(__FILE__) + '/helpers/custom_selenium_rspec_matchers')
-require File.expand_path(File.dirname(__FILE__) + '/server')
+require File.expand_path(File.dirname(__FILE__) + '/../../spec/selenium/servers/thin_server')
 include I18nUtilities
 
 SELENIUM_CONFIG = Setting.from_config("selenium") || {}
 SERVER_IP = SELENIUM_CONFIG[:server_ip] || UDPSocket.open { |s| s.connect('8.8.8.8', 1); s.addr.last }
+BIND_ADDRESS = SELENIUM_CONFIG[:bind_address] || '0.0.0.0'
 SECONDS_UNTIL_COUNTDOWN = 5
 SECONDS_UNTIL_GIVING_UP = 20
 MAX_SERVER_START_TIME = 60
+
+#NEED BETTER variable handling
+THIS_ENV = ENV['TEST_ENV_NUMBER'].to_i
+THIS_ENV = 1 if ENV['TEST_ENV_NUMBER'].blank?
+WEBSERVER = 'thin' #set WEBSERVER ENV to webrick to change webserver
+
 
 $server_port = nil
 $app_host_and_port = nil
@@ -81,48 +88,24 @@ module SeleniumTestsHelperMethods
 
       driver = nil
 
-      if File.exist?("/tmp/nightly_build.txt")
-        [1, 2, 3].each do |times|
-          begin
-            driver = Selenium::WebDriver.for(
-                :remote,
-                :url => 'http://' + (SELENIUM_CONFIG[:host_and_port] || "localhost:4444") + '/wd/hub',
-                :desired_capabilities => caps
-            )
-            break
-          rescue Exception => e
-            puts "Error attempting to start remote webdriver: #{e}"
-            raise e if times == 3
-          end
-        end
-      else
-        (1..60).each do |times|
-          env_test_number = ENV['TEST_ENV_NUMBER']
-          env_test_number = 1 if ENV['TEST_ENV_NUMBER'].blank?
 
-          begin
-            #curbs race conditions on selenium grid nodes
+      (1..60).each do |times|
+        begin
+          #curbs race conditions on selenium grid nodes
+          stagger_threads
 
-            if times == 1
-              first_run = true
-              stagger_threads(first_run)
-            else
-              stagger_threads
-            end
-
-            port_num = (4440 + env_test_number.to_i)
-            puts "Thread #{env_test_number} connecting to hub over port #{port_num}, try ##{times}"
-            driver = Selenium::WebDriver.for(
-                :remote,
-                :url => "http://127.0.0.1:#{port_num}/wd/hub",
-                :desired_capabilities => caps
-            )
-            break
-          rescue Exception => e
-            puts "Thread #{env_test_number}\n try ##{times}\nError attempting to start remote webdriver: #{e}"
-            sleep 10
-            raise e if times == 60
-          end
+          port_num = (4440 + THIS_ENV)
+          puts "Thread #{THIS_ENV} connecting to hub over port #{port_num}, try ##{times}"
+          driver = Selenium::WebDriver.for(
+              :remote,
+              :url => "http://127.0.0.1:#{port_num}/wd/hub",
+              :desired_capabilities => caps
+          )
+          break
+        rescue Exception => e
+          puts "Thread #{THIS_ENV}\n try ##{times}\nError attempting to start remote webdriver: #{e}"
+          sleep 10
+          raise e if times == 60
         end
       end
     end
@@ -176,21 +159,10 @@ module SeleniumTestsHelperMethods
     I18n.t(*a, &b)
   end
 
-  def stagger_threads(first_run = true, step_time = 9)
-    env_test_number = ENV['TEST_ENV_NUMBER']
-    env_test_number = 1 if ENV['TEST_ENV_NUMBER'].blank?
-
-    if first_run
-      wait_time = env_test_number.to_i * step_time
-      #thread 5 currently gets the most specs and lags behind the others this will decrease total build time by releasing it early
-      wait_time = 1 if env_test_number.to_i == 5
-      sleep(wait_time)
-    else
-      wait_time = env_test_number.to_i * 2
-      #thread 5 currently gets the most specs and lags behind the others this will decrease total build time by releasing it early
-      wait_time = 1 if env_test_number.to_i == 5
-      sleep(wait_time)
-    end
+  def stagger_threads(step_time = 9)
+    wait_time = THIS_ENV * step_time
+    #thread 5 currently gets the most specs and lags behind the others this will decrease total build time by releasing it early
+    sleep(wait_time)
   end
 
 
@@ -231,10 +203,30 @@ module SeleniumTestsHelperMethods
     raise "couldn't find an available port after #{tried_ports.length} tries! ports tried: #{tried_ports.join ", "}"
   end
 
-  def self.start_in_process_webrick_server
+  def self.start_webserver(webserver)
     setup_host_and_port
+    case webserver
+      when 'thin'
+        self.start_in_process_thin_server
+      when 'webrick'
+        self.start_in_process_webrick_server
+      else
+        puts "no web server specified, defaulting to WEBrick"
+        self.start_in_process_webrick_server
+    end
+  end
 
-    server = SpecFriendlyWEBrickServer
+  def self.shutdown_webserver(server)
+    shutdown = lambda do
+      server.shutdown
+      HostUrl.default_host = nil
+      HostUrl.file_host = nil
+    end
+    at_exit { shutdown.call }
+    return shutdown
+  end
+
+  def self.rack_app()
     app = Rack::Builder.new do
       use Rails::Rack::Debugger unless Rails.env.test?
       map '/' do
@@ -242,13 +234,22 @@ module SeleniumTestsHelperMethods
         run ActionController::Dispatcher.new
       end
     end.to_app
-    server.run(app, :Port => $server_port, :AccessLog => [])
-    shutdown = lambda do
-      server.shutdown
-      HostUrl.default_host = nil
-      HostUrl.file_host = nil
-    end
-    at_exit { shutdown.call }
+    return app
+  end
+
+  def self.start_in_process_thin_server
+    server = SpecFriendlyThinServer
+    app = self.rack_app
+    server.run(app, :BindAddress => BIND_ADDRESS, :Port => $server_port, :AccessLog => [])
+    shutdown = self.shutdown_webserver(server)
+    return shutdown
+  end
+
+  def self.start_in_process_webrick_server
+    server = SpecFriendlyWEBrickServer
+    app = self.rack_app
+    server.run(app, :BindAddress => BIND_ADDRESS, :Port => $server_port, :AccessLog => [])
+    shutdown = self.shutdown_webserver(server)
     return shutdown
   end
 
@@ -318,22 +319,23 @@ shared_examples_for "all selenium tests" do
 
   alias_method :driver, :selenium_driver
 
+  def fill_in_login_form(username, password)
+    user_element = f('#pseudonym_session_unique_id')
+    user_element.send_keys(username)
+    password_element = f('#pseudonym_session_password')
+    password_element.send_keys(password)
+    password_element.submit
+  end
+
   def login_as(username = "nobody@example.com", password = "asdfasdf", expect_success = true)
     # log out (just in case)
     driver.navigate.to(app_host + '/logout')
 
-    log_in = lambda do
-      user_element = f('#pseudonym_session_unique_id')
-      user_element.send_keys(username)
-      password_element = f('#pseudonym_session_password')
-      password_element.send_keys(password)
-      password_element.submit
-    end
     if expect_success
-      expect_new_page_load &log_in
+      expect_new_page_load { fill_in_login_form(username, password) }
       f('#identity .logout').should be_present
     else
-      log_in.call
+      fill_in_login_form(username, password)
     end
   end
 
@@ -347,6 +349,16 @@ shared_examples_for "all selenium tests" do
       PseudonymSession.any_instance.stubs(:record).returns { pseudonym.reload }
       PseudonymSession.any_instance.stubs(:used_basic_auth?).returns(false)
       # PseudonymSession.stubs(:find).returns(@pseudonym_session)
+    end
+  end
+
+  def destroy_session(pseudonym, real_login)
+    if real_login
+      driver.navigate.to(app_host + '/logout')
+    else
+      PseudonymSession.any_instance.unstub :session_credentials
+      PseudonymSession.any_instance.unstub :record
+      PseudonymSession.any_instance.unstub :used_basic_auth?
     end
   end
 
@@ -813,6 +825,17 @@ shared_examples_for "all selenium tests" do
     temp_file = open(element.attribute('src'))
     temp_file.size.should > 0
   end
+  
+  def check_element_attrs(element, attrs)
+    element.should be_displayed
+    attrs.each do |k, v|
+      if v.is_a? Regexp
+        element.attribute(k).should match v
+      else
+        element.attribute(k).should == v
+      end
+    end
+  end
 
   def check_file(element)
     require 'open-uri'
@@ -982,7 +1005,7 @@ def get_file(filename, data = nil)
   [filename, fullpath, data, @file]
 end
 
-def validate_link(link_element, breadcrumb_text)
+def validate_breadcrumb_link(link_element, breadcrumb_text)
   expect_new_page_load { link_element.click }
   if breadcrumb_text != nil
     breadcrumb = f('#breadcrumbs')
@@ -1005,6 +1028,14 @@ def alert_present?
   is_present
 end
 
+def scroll_page_to_top
+  driver.execute_script("window.scrollTo(0, 0")
+end
+
+def scroll_page_to_bottom
+  driver.execute_script("window.scrollTo(0, document.body.scrollHeight)")
+end
+
 # for when you have something like a textarea's value and you want to match it's contents
 # against a css selector.
 # usage:
@@ -1016,7 +1047,7 @@ end
 shared_examples_for "in-process server selenium tests" do
   it_should_behave_like "all selenium tests"
   prepend_before (:all) do
-    $in_proc_webserver_shutdown ||= SeleniumTestsHelperMethods.start_in_process_webrick_server
+    $in_proc_webserver_shutdown ||= SeleniumTestsHelperMethods.start_webserver(WEBSERVER)
   end
   before do
     HostUrl.stubs(:default_host).returns($app_host_and_port)
@@ -1037,6 +1068,7 @@ shared_examples_for "in-process server selenium tests" do
             @mutex ||= Mutex.new
             @mutex.synchronize { execute_without_synchronization(*args) }
           end
+
           alias_method_chain :execute, :synchronization
         end
       end

@@ -56,7 +56,7 @@ class Assignment < ActiveRecord::Base
   has_one :external_tool_tag, :class_name => 'ContentTag', :as => :context, :dependent => :destroy
   validates_associated :external_tool_tag, :if => :external_tool?
 
-  accepts_nested_attributes_for :external_tool_tag, :reject_if => proc { |attrs|
+  accepts_nested_attributes_for :external_tool_tag, :update_only => true, :reject_if => proc { |attrs|
     # only accept the url and new_tab params, the other accessible
     # params don't apply to an content tag being used as an external_tool_tag
     attrs.slice!(:url, :new_tab)
@@ -196,7 +196,7 @@ class Assignment < ActiveRecord::Base
       elsif due_at
         self.send_later_enqueue_args(:do_auto_peer_review, {
           :run_at => due_at,
-          :singleton => Shard.default.activate { "assignment:auto_peer_review:#{self.id}" }
+          :singleton => Shard.birth.activate { "assignment:auto_peer_review:#{self.id}" }
         })
       end
     end
@@ -782,10 +782,11 @@ class Assignment < ActiveRecord::Base
     Rails.cache.fetch(locked_cache_key(user), :expires_in => 1.minute) do
       locked = false
       assignment_for_user = self.overridden_for(user)
-      if (assignment_for_user.unlock_at && assignment_for_user.unlock_at > Time.now)
-        locked = {:asset_string => self.asset_string, :unlock_at => assignment_for_user.unlock_at}
-      elsif (assignment_for_user.lock_at && assignment_for_user.lock_at <= Time.now)
-        locked = {:asset_string => self.asset_string, :lock_at => assignment_for_user.lock_at}
+      if ((assignment_for_user.unlock_at && assignment_for_user.unlock_at > Time.now) ||
+          (assignment_for_user.lock_at && assignment_for_user.lock_at <= Time.now))
+        locked = { :asset_string => self.asset_string, 
+                   :unlock_at    => assignment_for_user.unlock_at,
+                   :lock_at      => assignment_for_user.lock_at }
       elsif self.could_be_locked && item = locked_by_module_item?(user, opts[:deep_check_if_needed])
         locked = {:asset_string => self.asset_string, :context_module => item.context_module.attributes}
       end
@@ -1011,7 +1012,7 @@ class Assignment < ActiveRecord::Base
     s = nil
     unique_constraint_retry do
       s = Submission.find_or_initialize_by_assignment_id_and_user_id(assignment_id, user_id)
-      s.save_without_broadcast if s.new_record?
+      s.save_without_broadcasting if s.new_record?
     end
     raise "bad" if s.new_record?
     s
@@ -1463,21 +1464,20 @@ class Assignment < ActiveRecord::Base
   def readable_submission_type(submission_type)
     case submission_type
     when 'online_quiz'
-      "a quiz"
+      t 'submission_types.a_quiz', "a quiz"
     when 'online_upload'
-      "a file upload"
+      t 'submission_types.a_file_upload', "a file upload"
     when 'online_text_entry'
-      "a text entry box"
+      t 'submission_types.a_text_entry_box', "a text entry box"
     when 'online_url'
-      "a website url"
+      t 'submission_types.a_website_url', "a website url"
     when 'discussion_topic'
-      "a discussion post"
+      t 'submission_types.a_discussion_post', "a discussion post"
     when 'media_recording'
-      "a media recording"
+      t 'submission_types.a_media_recording', "a media recording"
     else
       nil
     end
-
   end
   protected :readable_submission_type
 
@@ -1560,7 +1560,7 @@ class Assignment < ActiveRecord::Base
         begin
           import_from_migration(assign, migration.context)
         rescue
-          migration.add_warning("Couldn't import the assignment \"#{assign[:title]}\"", $!)
+          migration.add_import_warning(t('#migration.assignment_type', "Assignment"), assign[:title], $!)
         end
       end
     end
@@ -1588,9 +1588,10 @@ class Assignment < ActiveRecord::Base
     if hash[:instructions_in_html] == false
       self.extend TextHelper
     end
+    hash[:missing_links] = {:description => [], :instructions => [], }
     description = ""
-    description += hash[:instructions_in_html] == false ? ImportedHtmlConverter.convert_text(hash[:description] || "", context) : ImportedHtmlConverter.convert(hash[:description] || "", context)
-    description += hash[:instructions_in_html] == false ? ImportedHtmlConverter.convert_text(hash[:instructions] || "", context) : ImportedHtmlConverter.convert(hash[:instructions] || "", context)
+    description += hash[:instructions_in_html] == false ? ImportedHtmlConverter.convert_text(hash[:description] || "", context) : ImportedHtmlConverter.convert(hash[:description] || "", context, {:missing_links => hash[:missing_links][:description]})
+    description += hash[:instructions_in_html] == false ? ImportedHtmlConverter.convert_text(hash[:instructions] || "", context) : ImportedHtmlConverter.convert(hash[:instructions] || "", context, {:missing_links => hash[:missing_links][:instructions]})
     description += Attachment.attachment_list_from_migration(context, hash[:attachment_ids])
     item.description = description
 
@@ -1693,6 +1694,14 @@ class Assignment < ActiveRecord::Base
 
     context.imported_migration_items << item if context.imported_migration_items && new_record
     item.save_without_broadcasting!
+
+    if context.respond_to?(:content_migration) && context.content_migration
+      hash[:missing_links].each do |field, missing_links|
+        context.content_migration.add_missing_content_links(:class => item.class.to_s,
+          :id => item.id, :field => field, :missing_links => missing_links,
+          :url => "/#{context.class.to_s.underscore.pluralize}/#{context.id}/#{item.class.to_s.underscore.pluralize}/#{item.id}")
+      end
+    end
 
     if item.submission_types == 'external_tool'
       tag = item.create_external_tool_tag(:url => hash[:external_tool_url], :new_tab => hash[:external_tool_new_tab])
@@ -1850,7 +1859,7 @@ class Assignment < ActiveRecord::Base
       # the needs_grading_count trigger should change self.updated_at, invalidating the cache
       Rails.cache.fetch(['assignment_user_grading_count', self, user].cache_key) do
         case self.context.enrollment_visibility_level_for(user, vis)
-          when :full
+          when :full, :limited
             self.needs_grading_count
           when :sections
             self.submissions.joins("INNER JOIN enrollments e ON e.user_id = submissions.user_id").
