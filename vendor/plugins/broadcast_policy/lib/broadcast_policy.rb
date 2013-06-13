@@ -194,7 +194,7 @@ module Instructure #:nodoc:
         if campus_realtime_events.include? self.dispatch
           student_ids = []
           for student in students_list
-            student_ids.push(student.id)
+            student.nil? || student_ids.push(student.id)
           end
           event_data = {
             :students_list => student_ids,
