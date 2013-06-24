@@ -644,6 +644,7 @@ class QuizSubmission < ActiveRecord::Base
     # are at the bottom of this class.
     p.dispatch :submission_graded
     p.to { user }
+    p.students { user }
     p.whenever {|q_sub|
       policy = BroadcastPolicies::QuizSubmissionPolicy.new(q_sub)
       policy.should_dispatch_submission_graded?
@@ -651,6 +652,7 @@ class QuizSubmission < ActiveRecord::Base
 
     p.dispatch :submission_grade_changed
     p.to { user }
+    p.students { user }
     p.whenever {|q_sub|
       policy = BroadcastPolicies::QuizSubmissionPolicy.new(q_sub)
       policy.should_dispatch_submission_grade_changed?

@@ -33,5 +33,3 @@ Delayed::Worker.on_max_failures = proc do |job, err|
   # All other failures are kept for inspection.
   err.is_a?(Delayed::Backend::RecordNotFound)
 end
-
-require "celery_task"

@@ -183,7 +183,7 @@ module Instructure #:nodoc:
           return false
         end
 
-        campus_realtime_events = [
+        realtime_events = [
             'Submission Grade Changed',
             'Assignment Graded',
             'Submission Graded',
@@ -191,7 +191,7 @@ module Instructure #:nodoc:
             'Assignment Submitted Late',
             'Assignment Resubmitted'
         ]
-        if campus_realtime_events.include? self.dispatch
+        if realtime_events.include? self.dispatch
           student_ids = []
           for student in students_list
             student.nil? || student_ids.push(student.id)
@@ -210,10 +210,8 @@ module Instructure #:nodoc:
           #  :data => data
           #}
           event_json = event_data.to_json
+          Canvas.redis.set("canvas:realtime:events:#{record.id}:#{Time.new().to_i}", event_json)
 
-          # use delayed_job to run in background
-          Delayed::Job.enqueue CeleryTask.new(event_json)
-          #CeleryTask.new(event_json).perform # send immediately
         end
 
         n = DelayedNotification.send_later_if_production_enqueue_args(
