@@ -275,6 +275,13 @@ class ContentImportsController < ApplicationController
         else
           copy_params[:everything] = true
         end
+        if params[:shift_dates]
+          copy_params[:shift_dates] = true
+          copy_params[:old_start_date] = params[:old_start_date]
+          copy_params[:old_end_date] = params[:old_end_date]
+          copy_params[:new_start_date] = params[:new_start_date]
+          copy_params[:new_end_date] = params[:new_end_date]
+        end
       else
         process_migration_params
         @source_course = Course.find(params[:source_course])
