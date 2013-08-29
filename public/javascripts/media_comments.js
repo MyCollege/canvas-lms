@@ -230,7 +230,7 @@ define([
       $dialog.dialog({
         title: I18n.t('titles.record_upload_media_comment', "Record/Upload Media Comment"),
         width: 560,
-        height: 475,
+        height: 500,
         modal: false
       });
       $dialog.dialog('option', 'close', function() {
@@ -267,10 +267,10 @@ define([
 
       var temporaryName = $.trim($("#identity .user_name").text()) + " " + (new Date()).toISOString();
       setTimeout(function() {
+          //host:location.protocol + "//" + INST.kalturaSettings.domain,
         var recordVars = {
-          host:location.protocol + "//" + INST.kalturaSettings.domain,
+          host: INST.kalturaSettings.domain,
           rtmpHost:"rtmp://" + (INST.kalturaSettings.rtmp_domain || INST.kalturaSettings.domain),
-          kshowId:"-1",
           pid:INST.kalturaSettings.partner_id,
           subpid:INST.kalturaSettings.subpartner_id,
           uid:$dialog.data('uid') || "ANONYMOUS",
@@ -285,7 +285,9 @@ define([
           maxUploads: 1,
           partnerData: $.mediaComment.partnerData(),
           partner_data: $.mediaComment.partnerData(),
-          entryName:temporaryName
+          entryName:temporaryName,
+          showErrorMessages: "true",
+          debugMode: "true",
         }
         var params = {
           "align": "middle",
@@ -427,7 +429,7 @@ define([
         title: I18n.t('titles.record_upload_media_comment', "Record/Upload Media Comment"),
         resizable: false,
         width: 470,
-        height: 300,
+        height: 400,
         modal: false
       });
       $.ajaxJSON('/api/v1/services/kaltura_session', 'POST', {}, function(data) {
@@ -541,10 +543,10 @@ define([
           userTitle = $("#video_record_title,#audio_record_title").filter(":visible:first").val();
         } else if($("#media_record_tabs").tabs('option', 'selected') == 1) {
         }
-        if(entry.entryType == 1 && $("#audio_record_option").hasClass('selected_option')) {
-          entry.entryType = 5;
+        if(entry.mediaType == 1 && $("#audio_record_option").hasClass('selected_option')) {
+          entry.mediaType = 5;
         }
-        $.mediaComment.entryAdded(entry.entryId, entry.entryType, entry.entryName, userTitle);
+        $.mediaComment.entryAdded(entry.id, entry.mediaType, entry.name, userTitle);
         $("#media_comment_dialog").dialog('close');
       }
     } catch(e) {
