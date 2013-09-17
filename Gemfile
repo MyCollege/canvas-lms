@@ -140,7 +140,7 @@ group :development do
   gem 'rb-inotify', '~>0.9.0', :require => false
   gem 'rb-fsevent', :require => false
   gem 'rb-fchange', :require => false
-  gem 'ruby-debug-base19x'
+  # gem 'ruby-debug-base19x'
 
   # Option to DISABLE_RUBY_DEBUGGING is helpful IDE-based debugging.
   # The ruby debug gems conflict with the IDE-based debugger gem.
