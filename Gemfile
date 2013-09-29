@@ -184,6 +184,10 @@ group :icu do
   gem 'ffi-icu', '0.1.2'
 end
 
+group :production do
+  gem 'newrelic_rpm'
+end
+
 # Non-standard Canvas extension to Bundler behavior -- load the Gemfiles from
 # plugins.
 Dir[File.join(File.dirname(__FILE__),'vendor/plugins/*/Gemfile')].each do |g|
