@@ -4,8 +4,10 @@ define [
   'Backbone'
   'compiled/backbone-ext/DefaultUrlMixin'
   'compiled/models/TurnitinSettings'
+  'compiled/models/DateGroup'
   'compiled/collections/AssignmentOverrideCollection'
-], ($, _, {Model}, DefaultUrlMixin, TurnitinSettings, AssignmentOverrideCollection ) ->
+  'compiled/collections/DateGroupCollection'
+], ($, _, {Model}, DefaultUrlMixin, TurnitinSettings, DateGroup, AssignmentOverrideCollection, DateGroupCollection) ->
 
   class Assignment extends Model
     @mixin DefaultUrlMixin
@@ -22,6 +24,8 @@ define [
       if (turnitin_settings = @get('turnitin_settings'))?
         @set 'turnitin_settings', new TurnitinSettings(turnitin_settings),
           silent: true
+      if (all_dates = @get('all_dates'))?
+        @set 'all_dates', new DateGroupCollection(all_dates)
 
     isQuiz: => @_hasOnlyType 'online_quiz'
     isDiscussionTopic: => @_hasOnlyType 'discussion_topic'
@@ -190,15 +194,38 @@ define [
       return @get 'published' unless arguments.length > 0
       @set 'published', newPublished
 
+    position: (newPosition) ->
+      return @get('position') || 0 unless arguments.length > 0
+      @set 'position', newPosition
+
     iconType: =>
       return 'quiz' if @isQuiz()
       return 'discussion' if @isDiscussionTopic()
       return 'assignment'
 
-    htmlUrl: => @get 'html_url'
+    htmlUrl: =>
+      @get 'html_url'
+
+    htmlEditUrl: =>
+      "#{@get 'html_url'}/edit"
 
     labelId: =>
       return @id
+
+    defaultDates: =>
+      group = new DateGroup
+        due_at:    @get("due_at")
+        unlock_at: @get("unlock_at")
+        lock_at:   @get("lock_at")
+
+    multipleDueDates: =>
+      dateGroups = @get("all_dates")
+      dateGroups && dateGroups.length > 1
+
+    allDates: =>
+      groups = @get("all_dates")
+      models = (groups and groups.models) or []
+      result = _.map models, (group) -> group.toJSON()
 
     toView: =>
       fields = [
@@ -213,7 +240,8 @@ define [
         'gradeGroupStudentsIndividually', 'groupCategoryId', 'frozen',
         'frozenAttributes', 'freezeOnCopy', 'canFreeze', 'isSimple',
         'gradingStandardId', 'isLetterGraded', 'assignmentGroupId', 'iconType',
-        'published', 'htmlUrl', 'labelId'
+        'published', 'htmlUrl', 'htmlEditUrl', 'labelId', 'position',
+        'multipleDueDates', 'allDates', 'isQuiz'
       ]
       hash = id: @get 'id'
       for field in fields

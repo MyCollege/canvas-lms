@@ -24,63 +24,78 @@
 # `users/:user_id/page_views` can be accessed as `users/self/page_views` to
 # access the current user's page views.
 #
-# @object User
+# @model User
 #     {
-#       // The ID of the user.
-#       "id": 1,
-#
-#       // The name of the user.
-#       "name": "Sheldon Cooper",
-#
-#       // The name of the user that is should be used for sorting groups of users,
-#       // such as in the gradebook.
-#       "sortable_name": "Cooper, Sheldon",
-#
-#       // A short name the user has selected, for use in conversations or other less
-#       // formal places through the site.
-#       "short_name": "Shelly",
-#
-#       // The SIS ID associated with the user.  This field is only included if the
-#       // user came from a SIS import
-#       "sis_user_id": "",
-#
-#       // DEPRECATED: The SIS login ID associated with the user. Please use the
-#       // sis_user_id or login_id. This field will be removed in a future version of
-#       // the API.
-#       "sis_login_id": "",
-#
-#       // The unique login id for the user.  This is what the user uses to log in to
-#       // canvas.
-#       "login_id": "sheldon@caltech.example.com",
-#
-#       // If avatars are enabled, this field will be included and contain a url to
-#       // retrieve the user's avatar.
-#       "avatar_url": "",
-#
-#       // Optional: This field can be requested with certain API calls, and will
-#       // return a list of the users active enrollments. See the List enrollments
-#       // API for more details about the format of these records.
-#       "enrollments": [
-#         // ...
-#       ],
-#
-#       // Optional: This field can be requested with certain API calls, and will
-#       // return the users primary email address.
-#       "email": "sheldon@caltech.example.com",
-#
-#       // Optional: This field can be requested with certain API calls, and will
-#       // return the users locale.
-#       "locale": "tlh",
-#
-#       // Optional: This field is only returned in certain API calls, and will
-#       // return a timestamp representing the last time the user logged in to
-#       // canvas.
-#       "last_login": "2012-05-30T17:45:25Z",
-#
-#       // Optional: This field is only returned in ceratin API calls, and will
-#       // return the IANA time zone name of
-#       // the user's preferred timezone
-#       "time_zone": "America/Denver",
+#       "id": "User",
+#       "description": "A Canvas user, e.g. a student, teacher, administrator, observer, etc.",
+#       "required": ["id"],
+#       "properties": {
+#         "id": {
+#           "description": "The ID of the user.",
+#           "example": 2,
+#           "type": "integer",
+#           "format": "int64"
+#         },
+#         "name": {
+#           "description": "The name of the user.",
+#           "example": "Sheldon Cooper",
+#           "type": "string"
+#         },
+#         "sortable_name": {
+#           "description": "The name of the user that is should be used for sorting groups of users, such as in the gradebook.",
+#           "example": "Cooper, Sheldon",
+#           "type": "string"
+#         },
+#         "short_name": {
+#           "description": "A short name the user has selected, for use in conversations or other less formal places through the site.",
+#           "type": "string"
+#         },
+#         "sis_user_id": {
+#           "description": "The SIS ID associated with the user.  This field is only included if the user came from a SIS import.",
+#           "example": "SHEL93921",
+#           "type": "string"
+#         },
+#         "sis_login_id": {
+#           "description": "DEPRECATED: The SIS login ID associated with the user. Please use the sis_user_id or login_id. This field will be removed in a future version of the API.",
+#           "type": "string"
+#         },
+#         "login_id": {
+#           "description": "The unique login id for the user.  This is what the user uses to log in to Canvas.",
+#           "example": "sheldon@caltech.example.com",
+#           "type": "string"
+#         },
+#         "avatar_url": {
+#           "description": "If avatars are enabled, this field will be included and contain a url to retrieve the user's avatar.",
+#           "example": "https://en.gravatar.com/avatar/d8cb8c8cd40ddf0cd05241443a591868?s=80&r=g",
+#           "type": "string"
+#         },
+#         "enrollments": {
+#           "description": "Optional: This field can be requested with certain API calls, and will return a list of the users active enrollments. See the List enrollments API for more details about the format of these records.",
+#           "type": "array",
+#           "items": { "$ref": "Enrollment" }
+#         },
+#         "email": {
+#           "description": "Optional: This field can be requested with certain API calls, and will return the users primary email address.",
+#           "example": "sheldon@caltech.example.com",
+#           "type": "string"
+#         },
+#         "locale": {
+#           "description": "Optional: This field can be requested with certain API calls, and will return the users locale.",
+#           "example": "tlh",
+#           "type": "string"
+#         },
+#         "last_login": {
+#           "description": "Optional: This field is only returned in certain API calls, and will return a timestamp representing the last time the user logged in to canvas.",
+#           "example": "2012-05-30T17:45:25Z",
+#           "type": "string",
+#           "format": "date-time"
+#         },
+#         "time_zone": {
+#           "description": "Optional: This field is only returned in ceratin API calls, and will return the IANA time zone name of the user's preferred timezone.",
+#           "example": "America/Denver",
+#           "type": "string"
+#         }
+#       }
 #     }
 class UsersController < ApplicationController
 
@@ -192,7 +207,7 @@ class UsersController < ApplicationController
     end
   end
 
-  # @API List users
+  # @API List users in account
   # Retrieve the list of users associated with this account.
   #
   # @argument search_term [Optional, String]
@@ -499,7 +514,7 @@ class UsersController < ApplicationController
         :start_at => datetime_string(c.start_at, :verbose, nil, true),
         :end_at => datetime_string(c.conclude_at, :verbose, nil, true)
       }
-    }.to_json
+    }
   end
 
   include Api::V1::TodoItem
@@ -637,8 +652,45 @@ class UsersController < ApplicationController
     render :json => { :ignored => true }
   end
 
+  # @API Hide a stream item
+  # Hide the given stream item.
+  #
+  # @example_request
+  #    curl https://<canvas>/api/v1/users/self/activity_stream/<stream_item_id> \
+  #       -X DELETE \
+  #       -H 'Authorization: Bearer <token>'
+  #
+  # @example_response
+  #     {
+  #       "hidden": true
+  #     }
   def ignore_stream_item
-    StreamItemInstance.find_by_user_id_and_stream_item_id(@current_user.id, params[:id]).try(:update_attribute, :hidden, true)
+    @current_user.shard.activate do # can't just pass in the user's shard to relative_id_for, since local ids will be incorrectly scoped to the current shard, not the user's
+      if item = @current_user.stream_item_instances.where(stream_item_id: Shard.relative_id_for(params[:id])).first
+        item.update_attribute(:hidden, true) # observer handles cache invalidation
+      end
+    end
+    render :json => { :hidden => true }
+  end
+
+  # @API Hide all stream items
+  # Hide all stream items for the user
+  #
+  # @example_request
+  #    curl https://<canvas>/api/v1/users/self/activity_stream \
+  #       -X DELETE \
+  #       -H 'Authorization: Bearer <token>'
+  #
+  # @example_response
+  #     {
+  #       "hidden": true
+  #     }
+  def ignore_all_stream_items
+    @current_user.shard.activate do # can't just pass in the user's shard to relative_id_for, since local ids will be incorrectly scoped to the current shard, not the user's
+      @current_user.stream_item_instances.where(:hidden => false).each do |item|
+        item.update_attribute(:hidden, true) # observer handles cache invalidation
+      end
+    end
     render :json => { :hidden => true }
   end
 
@@ -664,7 +716,7 @@ class UsersController < ApplicationController
 
   def close_notification
     @current_user.close_announcement(AccountNotification.find(params[:id]))
-    render :json => @current_user.to_json
+    render :json => @current_user
   end
 
   def delete_user_service
@@ -690,7 +742,7 @@ class UsersController < ApplicationController
           raise "Unknown Service"
       end
       @service = UserService.register_from_params(@current_user, params[:user_service])
-      render :json => @service.to_json
+      render :json => @service
     rescue => e
       render :json => {:errors => true}, :status => :bad_request
     end
@@ -703,7 +755,7 @@ class UsersController < ApplicationController
       if params[:service_types]
         @services = @services.of_type(params[:service_types].split(",")) rescue []
       end
-      @services.to_json(:only => [:service_user_id, :service_user_url, :service_user_name, :service, :type, :id])
+      @services.map{ |s| s.as_json(only: [:service_user_id, :service_user_url, :service_user_name, :service, :type, :id]) }
     end
     render :json => json
   end
@@ -712,7 +764,7 @@ class UsersController < ApplicationController
     @service = @current_user.user_services.find_by_type_and_service('BookmarkService', params[:service_type]) rescue nil
     res = nil
     res = @service.find_bookmarks(params[:q]) if @service
-    render :json => res.to_json
+    render :json => res
   end
 
   def show
@@ -1182,14 +1234,14 @@ class UsersController < ApplicationController
     @user = User.find(params[:user_id])
     if authorized_action(@user, @current_user, :read)
       res = @user.assignments_needing_grading
-      render :json => res.to_json
+      render :json => res
     end
   end
 
   def assignments_needing_submitting
     @user = User.find(params[:user_id])
     if authorized_action(@user, @current_user, :read)
-      render :json => @user.assignments_needing_submitting.to_json
+      render :json => @user.assignments_needing_submitting
     end
   end
 
@@ -1198,7 +1250,7 @@ class UsersController < ApplicationController
       if authorized_action(@user, @current_user, :remove_avatar)
         @user.avatar_image = {}
         @user.save
-        render :json => @user.to_json
+        render :json => @user
       end
     else
       if !session["reported_#{@user.id}".to_sym]
@@ -1209,7 +1261,7 @@ class UsersController < ApplicationController
         @user.report_avatar_image!(@context)
       end
       session["reports_#{@user.id}".to_sym] = true
-      render :json => {:reported => true}.to_json
+      render :json => {:reported => true}
     end
   end
 
@@ -1275,7 +1327,7 @@ class UsersController < ApplicationController
     if authorized_action(@user, @current_user, :remove_avatar)
       @user.avatar_state = params[:avatar][:state]
       @user.save
-      render :json => @user.to_json(:include_root => false)
+      render :json => @user.as_json(:include_root => false)
     end
   end
 
@@ -1496,6 +1548,6 @@ class UsersController < ApplicationController
       end
     end
 
-    data.values.sort_by { |e| e[:enrollment].user.sortable_name.downcase }
+    Canvas::ICU.collate_by(data.values) { |e| e[:enrollment].user.sortable_name }
   end
 end

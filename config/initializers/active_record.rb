@@ -18,7 +18,7 @@ class ActiveRecord::Base
 
   def feed_code
     id = self.uuid rescue self.id
-    "#{self.class.base_ar_class.name.underscore}_#{id.to_s}"
+    "#{self.class.reflection_type_name}_#{id.to_s}"
   end
 
   def opaque_identifier(column)
@@ -99,11 +99,11 @@ class ActiveRecord::Base
 
   def asset_string
     @asset_string ||= {}
-    @asset_string[Shard.current] ||= "#{self.class.base_ar_class.name.underscore}_#{id}"
+    @asset_string[Shard.current] ||= "#{self.class.reflection_type_name}_#{id}"
   end
 
   def global_asset_string
-    @global_asset_string ||= "#{self.class.base_ar_class.name.underscore}_#{global_id}"
+    @global_asset_string ||= "#{self.class.reflection_type_name}_#{global_id}"
   end
 
   # little helper to keep checks concise and avoid a db lookup
@@ -238,12 +238,13 @@ class ActiveRecord::Base
     except = options.delete(:except) || []
     except = Array(except)
     except.concat(self.class.serialization_excludes) if self.class.respond_to?(:serialization_excludes)
-    except.concat(@serialization_excludes) if @serialization_excludes
+    except.concat(self.serialization_excludes) if self.respond_to?(:serialization_excludes)
     except.uniq!
+
     methods = options.delete(:methods) || []
     methods = Array(methods)
     methods.concat(self.class.serialization_methods) if self.class.respond_to?(:serialization_methods)
-    methods.concat(@serialization_methods) if @serialization_methods
+    methods.concat(self.serialization_methods) if self.respond_to?(:serialization_methods)
     methods.uniq!
 
     options[:except] = except unless except.empty?
@@ -269,6 +270,9 @@ class ActiveRecord::Base
       end
       unless options[:permissions][:include_permissions] == false
         permissions_hash = self.grants_rights?(options[:permissions][:user], options[:permissions][:session], *options[:permissions][:policies])
+        if self.respond_to?(:serialize_permissions)
+          permissions_hash = self.serialize_permissions(permissions_hash, options[:permissions][:user], options[:permissions][:session])
+        end
         obj_hash["permissions"] = permissions_hash
       end
     end
@@ -288,6 +292,10 @@ class ActiveRecord::Base
 
   def self.base_ar_class
     class_of_active_record_descendant(self)
+  end
+
+  def self.reflection_type_name
+    base_ar_class.name.underscore
   end
 
   def wildcard(*args)
@@ -333,28 +341,6 @@ class ActiveRecord::Base
     end
   end
 
-  def self.init_icu
-    return if defined?(@icu)
-    begin
-      Bundler.require 'icu'
-      if !ICU::Lib.respond_to?(:ucol_getRules)
-        suffix = ICU::Lib.figure_suffix(ICU::Lib.version.to_s)
-        ICU::Lib.attach_function(:ucol_getRules, "ucol_getRules#{suffix}", [:pointer, :pointer], :pointer)
-        ICU::Collation::Collator.class_eval do
-          def rules
-            length = FFI::MemoryPointer.new(:int)
-            ptr = ICU::Lib.ucol_getRules(@c, length)
-            ptr.read_array_of_uint16(length.read_int).pack("U*")
-          end
-        end
-      end
-      @icu = true
-      @collation_local_map = {}
-    rescue LoadError
-      @icu = false
-    end
-  end
-
   def self.best_unicode_collation_key(col)
     if ActiveRecord::Base.configurations[Rails.env]['adapter'] == 'postgresql'
       # For PostgreSQL, we can't trust a simple LOWER(column), with any collation, since
@@ -367,15 +353,7 @@ class ActiveRecord::Base
       if @collkey == 0
         "CAST(LOWER(replace(#{col}, '\\', '\\\\')) AS bytea)"
       else
-        locale = 'root'
-        init_icu
-        if @icu
-          # only use the actual locale if it differs from root; using a different locale means we
-          # can't use our index, which usually doesn't matter, but sometimes is very important
-          locale = @collation_local_map[I18n.locale] ||= ICU::Collation::Collator.new(I18n.locale.to_s).rules.empty? ? 'root' : I18n.locale
-        end
-
-        "collkey(#{col}, '#{locale}', true, 2, true)"
+        "collkey(#{col}, '#{Canvas::ICU.locale_for_collation}', true, 2, true)"
       end
     else
       # Not yet optimized for other dbs (MySQL's default collation is case insensitive;
@@ -493,6 +471,20 @@ class ActiveRecord::Base
       find(:all, :select => "DISTINCT #{column}", :conditions => conditions, :order => column)
     end
     result.map(&column.to_sym)
+  end
+
+  # direction is nil, :asc, or :desc
+  def self.nulls(first_or_last, column, direction = nil)
+    if connection.adapter_name == 'PostgreSQL'
+      clause = if first_or_last == :first && direction != :desc
+                 " NULLS FIRST"
+               elsif first_or_last == :last && direction == :desc
+                 " NULLS LAST"
+               end
+      "#{column} #{direction.to_s.upcase}#{clause}".strip
+    else
+      "#{column} IS#{" NOT" unless first_or_last == :last} NULL, #{column} #{direction.to_s.upcase}".strip
+    end
   end
 
   def self.find_in_batches_with_usefulness(options = {}, &block)
@@ -844,7 +836,7 @@ class ActiveRecord::ConnectionAdapters::AbstractAdapter
   end
 
   def after_transaction_commit(&block)
-    if open_transactions == 0
+    if open_transactions <= (Rails.env.test? ? 1 : 0)
       block.call
     else
       @after_transaction_commit ||= []
@@ -860,7 +852,26 @@ class ActiveRecord::ConnectionAdapters::AbstractAdapter
   # override commit_db_transaction
   def commit_db_transaction_with_callbacks
     commit_db_transaction_without_callbacks
-    return unless @after_transaction_commit
+    run_transaction_commit_callbacks
+  end
+
+  # this will only be chained in in Rails.env.test?, but we still
+  # sometimes stub Rails.env.test? in specs to specifically
+  # test behavior like this, so leave the check in this code
+  def release_savepoint_with_callbacks
+    release_savepoint_without_callbacks
+    return unless Rails.env.test?
+    return if open_transactions > 1
+    run_transaction_commit_callbacks
+  end
+
+  def rollback_db_transaction_with_callbacks
+    rollback_db_transaction_without_callbacks
+    @after_transaction_commit = [] if @after_transaction_commit
+  end
+
+  def run_transaction_commit_callbacks
+    return unless @after_transaction_commit.present?
     # the callback could trigger a new transaction on this connection,
     # and leaving the callbacks in @after_transaction_commit could put us in an
     # infinite loop.
@@ -869,11 +880,6 @@ class ActiveRecord::ConnectionAdapters::AbstractAdapter
     @after_transaction_commit = []
     callbacks.each { |cb| cb.call() }
   ensure
-    @after_transaction_commit = [] if @after_transaction_commit
-  end
-
-  def rollback_db_transaction_with_callbacks
-    rollback_db_transaction_without_callbacks
     @after_transaction_commit = [] if @after_transaction_commit
   end
 end
@@ -885,6 +891,7 @@ module MySQLAdapterExtensions
     klass.alias_method_chain :configure_connection, :pg_compat
     klass.alias_method_chain :commit_db_transaction, :callbacks
     klass.alias_method_chain :rollback_db_transaction, :callbacks
+    klass.alias_method_chain :release_savepoint, :callbacks if Rails.env.test?
   end
 
   def bulk_insert(table_name, records)
@@ -895,7 +902,7 @@ module MySQLAdapterExtensions
   end
 
   def add_column_with_foreign_key_check(table, name, type, options = {})
-    Canvas.active_record_foreign_key_check(name, type, options)
+    Canvas.active_record_foreign_key_check(name, type, options) unless adapter_name == 'Sqlite'
     add_column_without_foreign_key_check(table, name, type, options)
   end
 
@@ -988,7 +995,9 @@ if defined?(ActiveRecord::ConnectionAdapters::PostgreSQLAdapter)
       end
 
       if index_name.length > index_name_length
-        @logger.warn("Index name '#{index_name}' on table '#{table_name}' is too long; the limit is #{index_name_length} characters. Skipping.")
+        warning = "Index name '#{index_name}' on table '#{table_name}' is too long; the limit is #{index_name_length} characters. Skipping."
+        @logger.warn(warning)
+        raise warning unless Rails.env.production?
         return
       end
       if index_exists?(table_name, index_name, false)
@@ -1087,7 +1096,9 @@ end
 
 ActiveRecord::ConnectionAdapters::TableDefinition.class_eval do
   def column_with_foreign_key_check(name, type, options = {})
-    Canvas.active_record_foreign_key_check(name, type, options)
+    # SQLite isn't a first class supported db, but some specs still use it as an extra shard,
+    # and it implements column changes by recreating, so just ignore this for SQLite
+    Canvas.active_record_foreign_key_check(name, type, options) unless @base.adapter_name == 'SQLite'
     column_without_foreign_key_check(name, type, options)
   end
   alias_method_chain :column, :foreign_key_check
@@ -1149,6 +1160,7 @@ if defined?(ActiveRecord::ConnectionAdapters::SQLiteAdapter)
   ActiveRecord::ConnectionAdapters::SQLiteAdapter.class_eval do
     alias_method_chain :commit_db_transaction, :callbacks
     alias_method_chain :rollback_db_transaction, :callbacks
+    alias_method_chain :release_savepoint, :callbacks if Rails.env.test?
   end
 end
 
@@ -1173,6 +1185,7 @@ if defined?(ActiveRecord::ConnectionAdapters::PostgreSQLAdapter)
 
     alias_method_chain :commit_db_transaction, :callbacks
     alias_method_chain :rollback_db_transaction, :callbacks
+    alias_method_chain :release_savepoint, :callbacks if Rails.env.test?
   end
 end
 
@@ -1380,5 +1393,11 @@ ActiveRecord::ConnectionAdapters::SchemaStatements.class_eval do
     rescue ActiveRecord::StatementInvalid => e
       raise unless e.message =~ /PG(?:::)?Error: ERROR:.+does not exist|Mysql2?::Error: Error on rename/
     end
+  end
+
+  # does a query first to make the actual constraint adding fast
+  def change_column_null_with_less_locking(table, column)
+    execute("SELECT COUNT(*) FROM #{table} WHERE #{column} IS NULL") if open_transactions == 0
+    change_column_null table, column, false
   end
 end

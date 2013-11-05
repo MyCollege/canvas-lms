@@ -70,6 +70,26 @@ class WikiPage < ActiveRecord::Base
     end
   end
 
+  # sync hide_from_students with published state
+  def sync_hidden_and_unpublished
+    return if (context rescue nil).nil?
+
+    if context.draft_state_enabled?
+      if self.hide_from_students # hide_from_students overrides published
+        self.hide_from_students = false
+        self.workflow_state = 'unpublished'
+      end
+    else
+      if self.workflow_state.to_s == 'unpublished' # unpublished overrides hide_from_students
+        self.workflow_state = 'active'
+        self.hide_from_students = true
+      end
+    end
+  end
+  before_save :sync_hidden_and_unpublished
+  alias_method :after_find, :sync_hidden_and_unpublished
+  private :sync_hidden_and_unpublished
+
   def self.title_order_by_clause
     best_unicode_collation_key('wiki_pages.title')
   end  
@@ -185,11 +205,13 @@ class WikiPage < ActiveRecord::Base
 
   scope :not_deleted, where("wiki_pages.workflow_state<>'deleted'")
 
+  # needed for ensure_unique_url
   def not_deleted
     !deleted?
   end
 
-  scope :visible_to_students, where(:hide_from_students => false)
+  scope :not_hidden, where('wiki_pages.hide_from_students<>?', true)
+
   scope :order_by_id, order(:id)
 
   def locked_for?(user, opts={})
@@ -308,7 +330,7 @@ class WikiPage < ActiveRecord::Base
   def participants
     res = []
     if context && context.available?
-      if self.hide_from_students
+      if self.hide_from_students || !self.active?
         res += context.participating_admins
       else
         res += context.participants
@@ -556,6 +578,26 @@ class WikiPage < ActiveRecord::Base
         p.connection.execute("UPDATE wiki_pages SET view_count=COALESCE(view_count, 0) + 1 WHERE id=#{p.id}")
         p.context_module_action(user, context, :read)
       end
+    end
+  end
+
+  def initialize_wiki_page(user)
+    unless context.draft_state_enabled?
+      set_as_front_page! if !wiki.has_front_page? and url == Wiki::DEFAULT_FRONT_PAGE_URL
+    end
+
+    is_privileged_user = wiki.grants_right?(user, :manage)
+    if is_privileged_user && context.draft_state_enabled? && !context.is_a?(Group)
+      self.workflow_state = 'unpublished'
+    else
+      self.workflow_state = 'active'
+    end
+
+    self.editing_roles = (context.default_wiki_editing_roles rescue nil) || default_roles
+
+    if is_front_page?
+      self.body = t "#application.wiki_front_page_default_content_course", "Welcome to your new course wiki!" if context.is_a?(Course)
+      self.body = t "#application.wiki_front_page_default_content_group", "Welcome to your new group wiki!" if context.is_a?(Group)
     end
   end
 end

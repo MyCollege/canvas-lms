@@ -60,7 +60,7 @@ class SubmissionsApiController < ApplicationController
 
       result = @submissions.map { |s| submission_json(s, @assignment, @current_user, session, @context, includes) }
 
-      render :json => result.to_json
+      render :json => result
     end
   end
 
@@ -203,7 +203,7 @@ class SubmissionsApiController < ApplicationController
 
     if authorized_action(@submission, @current_user, :read)
       includes = Array(params[:include])
-      render :json => submission_json(@submission, @assignment, @current_user, session, @context, includes).to_json
+      render :json => submission_json(@submission, @assignment, @current_user, session, @context, includes)
     end
   end
 
@@ -326,10 +326,11 @@ class SubmissionsApiController < ApplicationController
     @user = get_user_considering_section(params[:user_id])
 
     authorized = false
+    @submission = @assignment.find_or_initialize_submission(@user)
+
     if params[:submission] || params[:rubric_assessment]
-      authorized = authorized_action(@context, @current_user, :manage_grades)
+      authorized = authorized_action(@submission, @current_user, :grade)
     else
-      @submission = @assignment.find_or_create_submission(@user)
       authorized = authorized_action(@submission, @current_user, :comment)
     end
 
@@ -342,7 +343,7 @@ class SubmissionsApiController < ApplicationController
         @submissions = @assignment.grade_student(@user, submission)
         @submission = @submissions.first
       else
-        @submission ||= @assignment.find_or_create_submission(@user)
+        @submission = @assignment.find_or_create_submission(@user)
         @submissions ||= [@submission]
       end
 
@@ -375,7 +376,7 @@ class SubmissionsApiController < ApplicationController
 
       json = submission_json(@submission, @assignment, @current_user, session, @context, %w(submission_comments))
       json[:all_submissions] = @submissions.map { |submission| submission_json(submission, @assignment, @current_user, session, @context) }
-      render :json => json.to_json
+      render :json => json
     end
   end
 

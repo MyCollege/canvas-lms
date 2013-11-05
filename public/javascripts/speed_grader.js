@@ -17,6 +17,7 @@
  */
 
 define([
+  'underscore',
   'INST' /* INST */,
   'i18n!gradebook',
   'jquery' /* $ */,
@@ -47,7 +48,7 @@ define([
   'vendor/scribd.view' /* scribd */,
   'vendor/spin' /* new Spinner */,
   'vendor/ui.selectmenu' /* /\.selectmenu/ */
-], function(INST, I18n, $, userSettings, htmlEscape, rubricAssessment, turnitinInfoTemplate, turnitinScoreTemplate) {
+], function(_, INST, I18n, $, userSettings, htmlEscape, rubricAssessment, turnitinInfoTemplate, turnitinScoreTemplate) {
 
   // fire off the request to get the jsonData
   window.jsonData = {};
@@ -161,6 +162,10 @@ define([
       this.submission = $.grep(jsonData.submissions, function(submission, i){
         return submission.user_id === student.id;
       })[0];
+      $.each(visibleRubricAssessments, function(i, rubricAssessment) {
+        rubricAssessment.user_id = rubricAssessment.user_id && String(rubricAssessment.user_id);
+        rubricAssessment.assessor_id = rubricAssessment.assessor_id && String(rubricAssessment.assessor_id);
+      });
       this.rubric_assessments = $.grep(visibleRubricAssessments, function(rubricAssessment, i){
         return rubricAssessment.user_id === student.id;
       });
@@ -171,6 +176,7 @@ define([
     // the sectionToShow will be remembered for a given user in a given browser across all assignments in this course
     if (!jsonData.GROUP_GRADING_MODE) {
       sectionToShow = userSettings.contextGet('grading_show_only_section');
+      sectionToShow = sectionToShow && String(sectionToShow);
     }
     if (sectionToShow) {
       var tempArray  = $.grep(jsonData.studentsWithSubmissions, function(student, i){
@@ -188,28 +194,39 @@ define([
     //by defaut the list is sorted alphbetically by student last name so we dont have to do any more work here, 
     // if the cookie to sort it by submitted_at is set we need to sort by submitted_at.
     var hideStudentNames = utils.shouldHideStudentNames();
+    var compareBy = function(f) {
+      return function(a, b) {
+        a = f(a);
+        b = f(b);
+        if ((!a && !b) || a === b) { return 0; }
+        if (!a || a > b) { return +1; }
+        else { return -1; }
+      };
+    };
     if(hideStudentNames) {
-      jsonData.studentsWithSubmissions.sort(function(a,b){
-        return ((a && a.submission && a.submission.id) || Number.MAX_VALUE) - 
-               ((b && b.submission && b.submission.id) || Number.MAX_VALUE);
-      });          
+      jsonData.studentsWithSubmissions.sort(compareBy(function(student) {
+        return student &&
+          student.submission &&
+          student.submission.id;
+      }));
     } else if (userSettings.get("eg_sort_by") == "submitted_at") {
-      jsonData.studentsWithSubmissions.sort(function(a,b){
-        return ((a && a.submission && a.submission.submitted_at && $.parseFromISO(a.submission.submitted_at).timestamp) || Number.MAX_VALUE) - 
-               ((b && b.submission && b.submission.submitted_at && $.parseFromISO(b.submission.submitted_at).timestamp) || Number.MAX_VALUE);
-      });
+      jsonData.studentsWithSubmissions.sort(compareBy(function(student){
+        return student &&
+          student.submission &&
+          student.submission.submitted_at &&
+          $.parseFromISO(student.submission.submitted_at).timestamp;
+      }));
     } else if (userSettings.get("eg_sort_by") == "submission_status") {
-      jsonData.studentsWithSubmissions.sort(function(a,b) {
-        var states = {
-          "not_graded": 1,
-          "resubmitted": 2,
-          "not_submitted": 3,
-          "graded": 4
-        };
-        var stateA = submissionStateName(a.submission);
-        var stateB = submissionStateName(b.submission);
-        return states[stateA] - states[stateB];
-      });
+      var states = {
+        "not_graded": 1,
+        "resubmitted": 2,
+        "not_submitted": 3,
+        "graded": 4
+      };
+      jsonData.studentsWithSubmissions.sort(compareBy(function(student){
+        return student &&
+          states[submissionStateName(student.submission)];
+      }));
     }
   }
 
@@ -349,8 +366,8 @@ define([
     addEvents: function(){
       this.elements.nav.click($.proxy(this.toAssignment, this));
       this.elements.mute.link.click($.proxy(this.onMuteClick, this));
-      this.elements.settings.form.submit($.proxy(this.submitForm, this));
-      this.elements.settings.link.click($.proxy(this.showSettingsModal, this));
+      this.elements.settings.form.submit(this.submitSettingsForm.bind(this));
+      this.elements.settings.link.click(this.showSettingsModal.bind(this));
     },
     addSpinner: function(){
       this.elements.mute.link.append(this.elements.spinner.el);
@@ -392,15 +409,21 @@ define([
       EG[e.target.getAttribute('class')]();
     },
 
-    submitForm: function(e){
+    submitSettingsForm: function(e){
+      e.preventDefault();
       userSettings.set('eg_sort_by', $('#eg_sort_by').val());
       userSettings.set('eg_hide_student_names', $("#hide_student_names").prop('checked'));
       $(e.target).find(".submit_button").attr('disabled', true).text(I18n.t('buttons.saving_settings', "Saving Settings..."));
-      window.location.reload();
-      return false;
+      var gradeByQuestion = $("#enable_speedgrader_grade_by_question").prop('checked');
+      $.post(ENV.settings_url, {
+        enable_speedgrader_grade_by_question: gradeByQuestion
+      }).then(function() {
+        window.location.reload();
+      });
     },
 
     showSettingsModal: function(e){
+      e.preventDefault();
       this.elements.settings.form.dialog('open');
     },
 
@@ -955,7 +978,7 @@ define([
                       hash.student_id;
 
       // choose the first ungraded student if the requested one doesn't exist
-      if (typeof(studentId) != "number" || !jsonData.studentMap[studentId]) {
+      if (!jsonData.studentMap[studentId]) {
         studentId = jsonData.studentsWithSubmissions[0].id;
         for (var i = 0, max = jsonData.studentsWithSubmissions.length; i < max; i++){
           if (typeof jsonData.studentsWithSubmissions[i].submission !== 'undefined' && jsonData.studentsWithSubmissions[i].submission.workflow_state !== 'graded'){
@@ -995,7 +1018,7 @@ define([
     },
 
     handleStudentChanged: function(){
-      var id = parseInt( $selectmenu.val(), 10 );
+      var id = $selectmenu.val();
       this.currentStudent = jsonData.studentMap[id];
       document.location.hash = "#" + encodeURIComponent(JSON.stringify({
         "student_id": this.currentStudent.id
@@ -1170,26 +1193,31 @@ define([
 
     refreshSubmissionsToView: function(){
       var innerHTML = "";
-      if (this.currentStudent.submission.submission_history.length > 0) {
-        submissionToSelect = this.currentStudent.submission.submission_history[this.currentStudent.submission.submission_history.length - 1].submission;
+      var s = this.currentStudent.submission;
+      var submissionHistory;
 
-        $.each(this.currentStudent.submission.submission_history, function(i, s){
-          s = s.submission;
-          var submittedAt = s.submitted_at && $.parseFromISO(s.submitted_at),
-              late        = s['late'];
+      if ((submissionHistory = s.submission_history).length > 0) {
+        var submissionToSelect = _(submissionHistory).last();
 
-          innerHTML += "<option " + (late ? "class='late'" : "") + " value='" + i + "' " +
-                        (s == submissionToSelect ? "selected='selected'" : "") + ">" +
+        _(submissionHistory).each(function(o, i) {
+          var s           = o.submission;
+              submittedAt = s.submitted_at && $.parseFromISO(s.submitted_at),
+              late        = s.late,
+              value       = s.version || i;
+
+          innerHTML += "<option " + (late ? "class='late'" : "") + " value='" + value + "' " +
+                        (o == submissionToSelect ? "selected='selected'" : "") + ">" +
                         (submittedAt ? submittedAt.datetime_formatted : I18n.t('no_submission_time', 'no submission time')) +
                         (late ? " " + I18n.t('loud_late', "LATE") : "") +
-                        (s.grade && s.grade_matches_current_submission ? " (" + I18n.t('grade', "grade: %{grade}", {'grade': s.grade}) + ')' : "") +
+                        (s.grade && (s.grade_matches_current_submission || s.show_grade_in_dropdown) ? " (" + I18n.t('grade', "grade: %{grade}", {'grade': s.grade}) + ')' : "") +
                        "</option>";
+
         });
       }
       $submission_to_view.html(innerHTML);
 
       //if there are multiple submissions
-      if (this.currentStudent && this.currentStudent.submission && this.currentStudent.submission.submission_history && this.currentStudent.submission.submission_history.length > 1 ) {
+      if (submissionHistory.length > 1) {
         $multiple_submissions.show();
         $single_submission.hide();
       }

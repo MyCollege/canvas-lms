@@ -20,7 +20,7 @@ describe "quizzes questions" do
 
       click_questions_tab
       hover_and_click(".edit_question_link")
-      wait_for_animations
+      wait_for_ajaximations
       question = fj(".question_form:visible")
       click_option('.question_form:visible .question_type', 'Multiple Choice')
       replace_content(question.find_element(:css, 'input[name="question_name"]'), 'edited question')
@@ -267,8 +267,9 @@ describe "quizzes questions" do
                                  :name => "Question",
                                  :question_name => "Question",
                                  :incorrect_comments => "",
-                                 :assessment_question_id => nil
+                                 :assessment_question_id => b.id
                              })
+      quest2.save!
       q.generate_quiz_data
       q.save!
       get "/courses/#{@course.id}/quizzes/#{q.id}/edit"

@@ -26,6 +26,7 @@ class ApplicationController < ActionController::Base
   include Api
   include LocaleSelection
   include Api::V1::User
+  include Api::V1::WikiPage
   around_filter :set_locale
 
   helper :all
@@ -53,7 +54,17 @@ class ApplicationController < ActionController::Base
   after_filter :update_enrollment_last_activity_at
   include Tour
 
-  add_crumb(proc { %Q{<i title="#{I18n.t('links.dashboard', "My Dashboard")}" class="icon-home standalone-icon"></i>}.html_safe }, :root_path, :class => "home")
+  add_crumb(proc {
+    title = I18n.t('links.dashboard', 'My Dashboard')
+    crumb = <<-END
+      <i class="icon-home standalone-icon"
+         title="#{title}">
+        <span class="screenreader-only">#{title}</span>
+      </i>
+    END
+
+    crumb.html_safe
+  }, :root_path, class: 'home')
 
   ##
   # Sends data from rails to JavaScript
@@ -269,6 +280,7 @@ class ApplicationController < ActionController::Base
     action_session = opts.shift if !opts[0].is_a?(Symbol) && !opts[0].is_a?(Array)
     actions = Array(opts.shift)
     can_do = false
+
     begin
       if object == @context && user == @current_user
         @context_all_permissions ||= @context.grants_rights?(user, session, nil)
@@ -429,7 +441,10 @@ class ApplicationController < ActionController::Base
       end
       set_badge_counts_for(@context, @current_user, @current_enrollment)
       assign_localizer if @context.present?
-      add_crumb(@context.short_name, named_context_url(@context, :context_url), :id => "crumb_#{@context.asset_string}") if @context && @context.respond_to?(:short_name)
+      if @context && @context.respond_to?(:short_name)
+        crumb_url = named_context_url(@context, :context_url) if @context.grants_right?(@current_user, :read)
+        add_crumb(@context.short_name, crumb_url)
+      end
     end
   end
   
@@ -607,8 +622,8 @@ class ApplicationController < ActionController::Base
       respond_to do |format|
         flash[:error] = error unless request.format.to_s == "text/plain"
         format.html {redirect_to redirect }
-        format.json {render :json => {:errors => {:base => error}}.to_json }
-        format.text {render :json => {:errors => {:base => error}}.to_json }
+        format.json {render :json => {:errors => {:base => error}} }
+        format.text {render :json => {:errors => {:base => error}} }
       end
       return true
     end
@@ -999,41 +1014,11 @@ class ApplicationController < ActionController::Base
     return if @page || !page_name
 
     if params[:action] != 'create'
-      @page = @wiki.wiki_pages.deleted_last.find_by_url(page_name.to_s) ||
-              @wiki.wiki_pages.deleted_last.find_by_url(page_name.to_s.to_url) ||
-              @wiki.wiki_pages.find_by_id(page_name.to_i)
+      @page = @wiki.wiki_pages.not_deleted.find_by_url(page_name.to_s) ||
+              @wiki.wiki_pages.not_deleted.find_by_url(page_name.to_s.to_url) ||
+              @wiki.wiki_pages.not_deleted.find_by_id(page_name.to_i)
     end
-    @page ||= @wiki.wiki_pages.new(
-      :title => page_name.titleize,
-      :url => page_name.to_url
-    )
-    if @page.new_record?
-      @page.wiki = @wiki
-      initialize_wiki_page
-    end
-  end
-
-  # Initializes the state of @page, but only if it is a new page
-  def initialize_wiki_page
-    return unless @page.new_record? || @page.deleted?
-
-    unless @context.draft_state_enabled?
-      @page.set_as_front_page! if !@wiki.has_front_page? and @page.url == Wiki::DEFAULT_FRONT_PAGE_URL
-    end
-
-    is_privileged_user = is_authorized_action?(@page.wiki, @current_user, :manage)
-    if is_privileged_user && @context.draft_state_enabled? && !@context.is_a?(Group)
-      @page.workflow_state = 'unpublished'
-    else
-      @page.workflow_state = 'active'
-    end
-
-    @page.editing_roles = (@context.default_wiki_editing_roles rescue nil) || @page.default_roles
-
-    if @page.is_front_page?
-      @page.body = t "#application.wiki_front_page_default_content_course", "Welcome to your new course wiki!" if @context.is_a?(Course)
-      @page.body = t "#application.wiki_front_page_default_content_group", "Welcome to your new group wiki!" if @context.is_a?(Group)
-    end
+    @page ||= @wiki.build_wiki_page(@current_user, :url => page_name)
   end
 
   def context_wiki_page_url
@@ -1053,6 +1038,8 @@ class ApplicationController < ActionController::Base
       redirect_to named_context_url(context, :context_quiz_url, tag.content_id, url_params)
     elsif tag.content_type == 'DiscussionTopic'
       redirect_to named_context_url(context, :context_discussion_topic_url, tag.content_id, url_params)
+    elsif tag.content_type == 'Rubric'
+      redirect_to named_context_url(context, :context_rubric_url, tag.content_id, url_params)
     elsif tag.content_type == 'ExternalUrl'
       @tag = tag
       @module = tag.context_module
@@ -1389,11 +1376,15 @@ class ApplicationController < ActionController::Base
     (@body_classes ||= []) << 'embedded' if @embedded_view
   end
 
+  def stringify_json_ids?
+    request.headers['Accept'] =~ %r{application/json\+canvas-string-ids}
+  end
+
   def render(options = nil, extra_options = {}, &block)
     set_layout_options
     if options && options.key?(:json)
       json = options.delete(:json)
-      json = ActiveSupport::JSON.encode(json) unless json.is_a?(String)
+      json = ActiveSupport::JSON.encode(json, stringify_json_ids: stringify_json_ids?) unless json.is_a?(String)
       # prepend our CSRF protection to the JSON response, unless this is an API
       # call that didn't use session auth, or a non-GET request.
       if prepend_json_csrf?
@@ -1483,13 +1474,16 @@ class ApplicationController < ActionController::Base
         notices << {:type => 'warning', :content => unsupported_browser, :classes => 'unsupported_browser'} 
       end
       if error = flash.delete(:error)
-        notices << {:type => 'error', :content => error}
+        notices << {:type => 'error', :content => error, :icon => 'warning'}
       end
       if warning = flash.delete(:warning)
-        notices << {:type => 'warning', :content => warning}
+        notices << {:type => 'warning', :content => warning, :icon => 'warning'}
+      end
+      if info = flash.delete(:info)
+        notices << {:type => 'info', :content => info, :icon => 'info'}
       end
       if notice = (flash[:html_notice] ? flash.delete(:html_notice).html_safe : flash.delete(:notice))
-        notices << {:type => 'success', :content => notice}
+        notices << {:type => 'success', :content => notice, :icon => 'check'}
       end
       notices
     end
@@ -1575,10 +1569,11 @@ class ApplicationController < ActionController::Base
     raise ActionController::RoutingError.new('Not Found')
   end
 
-  def set_js_rights
-    if respond_to?(:js_rights)
+  def set_js_rights(objtypes = nil)
+    objtypes ||= js_rights if respond_to?(:js_rights)
+    if objtypes
       hash = {}
-      js_rights.each do |instance_symbol|
+      objtypes.each do |instance_symbol|
         instance_name = instance_symbol.to_s
         obj = instance_variable_get("@#{instance_name}")
         policy = obj.check_policy(@current_user, session) unless obj.nil? || !obj.respond_to?(:check_policy)
@@ -1587,5 +1582,31 @@ class ApplicationController < ActionController::Base
 
       js_env hash
     end
+  end
+
+  def set_js_wiki_data(opts = {})
+    hash = {}
+
+    hash[:DEFAULT_EDITING_ROLES] = @context.default_wiki_editing_roles if @context.respond_to?(:default_wiki_editing_roles)
+    hash[:WIKI_PAGES_PATH] = polymorphic_path([@context, :pages])
+    if opts[:course_home]
+      hash[:COURSE_HOME] = true
+      hash[:COURSE_TITLE] = @context.name
+    end
+
+    if @page
+      hash[:WIKI_PAGE] = wiki_page_json(@page, @current_user, session)
+      hash[:WIKI_PAGE_REVISION] = (current_version = @page.versions.current) ? current_version.number : nil
+      hash[:WIKI_PAGE_SHOW_PATH] = polymorphic_path([@context, :named_page], :wiki_page_id => @page)
+      hash[:WIKI_PAGE_EDIT_PATH] = polymorphic_path([@context, :edit_named_page], :wiki_page_id => @page)
+      hash[:WIKI_PAGE_HISTORY_PATH] = polymorphic_path([@context, @page, :wiki_page_revisions])
+
+      if @context.is_a?(Course) && @context.grants_right?(@current_user, :read)
+        hash[:COURSE_ID] = @context.id
+        hash[:MODULES_PATH] = polymorphic_path([@context, :context_modules])
+      end
+    end
+
+    js_env hash
   end
 end

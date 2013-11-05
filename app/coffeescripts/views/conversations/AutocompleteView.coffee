@@ -181,6 +181,7 @@ define [
     #
     # Returns a model object.
     _getModel: (id) ->
+      id = id && String(id)
       result = @resultCollection.find((model) -> model.id == id)
 
     # Internal: Remove the "selected" class from result list items.
@@ -298,7 +299,7 @@ define [
       return if @currentContext.id.match(/course_\d+_(group|section)/)
 
       tag =
-        id:       "#{@currentContext.id}_all"
+        id:       @currentContext.id
         name:     name
         everyone: true
         people: @currentContext.peopleCount
@@ -532,14 +533,14 @@ define [
     #
     # Returns nothing.
     setContext: (context, disable = false) ->
-      return if context?.id == @currentContext?.id
       context = null unless context.id
+      if disable and !_.include(ENV.current_user_roles, 'admin') and !@disabled
+        @disable(!context)
+      return if context?.id == @currentContext?.id
       @currentContext     = context
       @hasExternalContext = !!context
       @tokens             = []
       @$tokenList.find('li.ac-token').remove()
-      if disable and !_.include(ENV.current_user_roles, 'admin') and !@disabled
-        @disable(!@currentContext)
 
     disable: (value = true) ->
       @$input.prop('disabled', value)

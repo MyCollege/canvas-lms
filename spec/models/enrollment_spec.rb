@@ -22,7 +22,7 @@ describe Enrollment do
   before(:each) do
     @user = User.create!
     @course = Course.create!
-    @enrollment = Enrollment.new(valid_enrollment_attributes)
+    @enrollment = StudentEnrollment.new(valid_enrollment_attributes)
   end
 
   it "should be valid" do
@@ -188,47 +188,37 @@ describe Enrollment do
     it "should drop high scores for groups when specified" do
       @enrollment = @user.enrollments.first
       @group.update_attribute(:rules, "drop_highest:1")
-      run_transaction_commit_callbacks
       @enrollment.reload.computed_current_score.should eql(nil)
       @submission = @assignment.grade_student(@user, :grade => "9")
       @submission[0].score.should eql(9.0)
-      run_transaction_commit_callbacks
       @enrollment.reload.computed_current_score.should eql(90.0)
       @submission2 = @assignment2.grade_student(@user, :grade => "20")
       @submission2[0].score.should eql(20.0)
-      run_transaction_commit_callbacks
       @enrollment.reload.computed_current_score.should eql(50.0)
       @group.update_attribute(:rules, nil)
-      run_transaction_commit_callbacks
       @enrollment.reload.computed_current_score.should eql(58.0)
     end
 
     it "should drop low scores for groups when specified" do
       @enrollment = @user.enrollments.first
-      run_transaction_commit_callbacks
       @enrollment.reload.computed_current_score.should eql(nil)
       @submission = @assignment.grade_student(@user, :grade => "9")
       @submission2 = @assignment2.grade_student(@user, :grade => "20")
       @submission2[0].score.should eql(20.0)
-      run_transaction_commit_callbacks
       @enrollment.reload.computed_current_score.should eql(90.0)
       @group.update_attribute(:rules, "")
-      run_transaction_commit_callbacks
       @enrollment.reload.computed_current_score.should eql(58.0)
     end
 
     it "should not drop the last score for a group, even if the settings say it should be dropped" do
       @enrollment = @user.enrollments.first
       @group.update_attribute(:rules, "drop_lowest:2")
-      run_transaction_commit_callbacks
       @enrollment.reload.computed_current_score.should eql(nil)
       @submission = @assignment.grade_student(@user, :grade => "9")
       @submission[0].score.should eql(9.0)
-      run_transaction_commit_callbacks
       @enrollment.reload.computed_current_score.should eql(90.0)
       @submission2 = @assignment2.grade_student(@user, :grade => "20")
       @submission2[0].score.should eql(20.0)
-      run_transaction_commit_callbacks
       @enrollment.reload.computed_current_score.should eql(90.0)
     end
   end
@@ -283,8 +273,7 @@ describe Enrollment do
     it "should be able to read grades if the course grants management rights to the enrollment" do
       @new_user = user_model
       @enrollment.grants_rights?(@new_user, nil, :read_grades)[:read_grades].should be_false
-      @course.instructors << @new_user
-      @course.save!
+      @course.enroll_teacher(@new_user)
       @enrollment.grants_rights?(@user, nil, :read_grades).should be_true
     end
 
@@ -1271,7 +1260,7 @@ describe Enrollment do
         course(:active_all => 1)
         user
         Enrollment.ended.should == []
-        @enrollment = Enrollment.create!(:user => @user, :course => @course)
+        @enrollment = StudentEnrollment.create!(:user => @user, :course => @course)
         Enrollment.ended.should == []
         @enrollment.update_attribute(:workflow_state, 'active')
         Enrollment.ended.should == []
@@ -1650,7 +1639,7 @@ describe Enrollment do
     it "triggers when enrollment is created" do
       DueDateCacher.expects(:recompute).with(@assignments.first).once
       DueDateCacher.expects(:recompute).with(@assignments.last).once
-      @course.enrollments.create(:user => user)
+      @course.enroll_student(user)
     end
 
     it "triggers when enrollment is deleted" do

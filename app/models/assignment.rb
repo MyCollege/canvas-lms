@@ -116,8 +116,7 @@ class Assignment < ActiveRecord::Base
     self.submission_types == 'external_tool'
   end
 
-  validates_presence_of :context_id
-  validates_presence_of :context_type
+  validates_presence_of :context_id, :context_type, :workflow_state
   validates_length_of :title, :maximum => maximum_string_length, :allow_nil => true
   validates_length_of :description, :maximum => maximum_long_text_length, :allow_nil => true, :allow_blank => true
   validate :frozen_atts_not_altered, :if => :frozen?, :on => :update
@@ -375,6 +374,9 @@ class Assignment < ActiveRecord::Base
       quiz.assignment_group_id = self.assignment_group_id
       quiz.workflow_state = 'created' if quiz.deleted?
       quiz.saved_by = :assignment
+      if self.context.draft_state_enabled?
+        quiz.workflow_state = published? ? 'available' : 'unpublished'
+      end
       quiz.save if quiz.changed?
     elsif self.submission_types == "discussion_topic" && @saved_by != :discussion_topic
       topic = self.discussion_topic || self.context.discussion_topics.build(:user => @updating_user)
@@ -860,9 +862,12 @@ class Assignment < ActiveRecord::Base
     group = nil
     students = [student]
     if has_group_category? && group = group_category.group_for(student)
-      students = group.users.joins("INNER JOIN enrollments ON enrollments.user_id=users.id").
-        where(:enrollments => { :course_id => self.context}).
-        where(Course.reflections[:student_enrollments].options[:conditions]).all
+      students = group.users
+        .joins("INNER JOIN enrollments ON enrollments.user_id=users.id")
+        .where(:enrollments => { :course_id => self.context})
+        .where(Course.reflections[:student_enrollments].options[:conditions])
+        .uniq
+        .all
     end
     [group, students]
   end
@@ -949,9 +954,18 @@ class Assignment < ActiveRecord::Base
     s
   end
 
+  def self.find_or_initialize_submission(assignment_id, user_id)
+    Submission.find_or_initialize_by_assignment_id_and_user_id(assignment_id, user_id)
+  end
+
   def find_or_create_submission(user)
     user_id = user.is_a?(User) ? user.id : user
     Assignment.find_or_create_submission(self.id, user_id)
+  end
+
+  def find_or_initialize_submission(user)
+    user_id = user.is_a?(User) ? user.id : user
+    Assignment.find_or_initialize_submission(self.id, user_id)
   end
 
   def find_asset_for_assessment(association, user_id)
@@ -1120,7 +1134,7 @@ class Assignment < ActiveRecord::Base
     res[:context][:enrollments] = context.enrollments_visible_to(user).
         map{|s| s.as_json(:include_root => false, :only => [:user_id, :course_section_id]) }
     res[:context][:quiz] = self.quiz.as_json(:include_root => false, :only => [:anonymous_submissions])
-    res[:submissions] = submissions.where(:user_id => students).map{|sub|
+    res[:submissions] = submissions.where(:user_id => students).map do |sub|
       json = sub.as_json(:include_root => false,
         :include => {
           :submission_comments => {
@@ -1134,28 +1148,40 @@ class Assignment < ActiveRecord::Base
         :methods => [:scribdable?, :scribd_doc, :submission_history, :late],
         :only => submission_fields
       )
-      if json['submission_history']
-        json['submission_history'].map! do |version|
-          version.as_json(
-            :include => {
-              :submission_comments => { :only => comment_fields }
-            },
-            :only => submission_fields,
-            :methods => [:versioned_attachments, :late]
-          ).tap do |version_json|
-            if version_json['submission'] && version_json['submission']['versioned_attachments']
-              version_json['submission']['versioned_attachments'].map! do |a|
-                a.as_json(
-                  :only => attachment_fields,
-                  :methods => [:view_inline_ping_url, :scribd_render_url]
-                )
-              end
-            end
-          end
-        end
-      end
+      json['submission_history'] = if json['submission_history'] && quiz.nil?
+                                     json['submission_history'].map do |version|
+                                       version.as_json(
+                                         :include => {
+                                           :submission_comments => { :only => comment_fields }
+                                         },
+                                         :only => submission_fields,
+                                         :methods => [:versioned_attachments, :late]
+                                       ).tap do |version_json|
+                                         if version_json['submission'] && version_json['submission']['versioned_attachments']
+                                           version_json['submission']['versioned_attachments'].map! do |a|
+                                             a.as_json(
+                                               :only => attachment_fields,
+                                               :methods => [:view_inline_ping_url, :scribd_render_url]
+                                             )
+                                           end
+                                         end
+                                       end
+                                     end
+                                   elsif quiz && sub.quiz_submission
+                                     quiz_submission_versions = sub.quiz_submission.versions.reverse
+                                     quiz_submission_versions.map do |v|
+                                       qs = v.model
+                                       {submission: {
+                                         grade: qs.score,
+                                         show_grade_in_dropdown: true,
+                                         submitted_at: qs.finished_at,
+                                         late: sub.late?,
+                                         version: v.number,
+                                       }}
+                                     end
+                                   end
       json
-    }
+    end
     res[:GROUP_GRADING_MODE] = grade_as_group?
     res
   ensure
@@ -1199,7 +1225,7 @@ class Assignment < ActiveRecord::Base
 
   def visible_rubric_assessments_for(user)
     if self.rubric_association
-      self.rubric_association.rubric_assessments.select{|a| a.grants_rights?(user, :read)[:read]}.sort_by{|a| [a.assessment_type == 'grading' ? '0' : '1', a.assessor_name] }
+      self.rubric_association.rubric_assessments.select{|a| a.grants_rights?(user, :read)[:read]}.sort_by{|a| [a.assessment_type == 'grading' ? SortFirst : SortLast, Canvas::ICU.collation_key(a.assessor_name)] }
     end
   end
 
@@ -1297,7 +1323,7 @@ class Assignment < ActiveRecord::Base
       }.sort_by { |c|
         [
           # prefer those who still need more reviews done.
-          assessment_request_counts[c.id] < self.peer_review_count ? 0 : 1,
+          assessment_request_counts[c.id] < self.peer_review_count ? SortFirst : SortLast,
           # then prefer those who are assigned fewer reviews at this point --
           # this helps avoid loops where everybody is reviewing those who are
           # reviewing them, leaving the final assignee out in the cold.
@@ -1742,7 +1768,7 @@ class Assignment < ActiveRecord::Base
 
   def sort_key
     # undated assignments go last
-    [due_at ? 0 : 1, due_at || 0, title]
+    [due_at || SortLast, Canvas::ICU.collation_key(title)]
   end
 
   def special_class; nil; end

@@ -35,6 +35,7 @@ class Course < ActiveRecord::Base
                   :syllabus_body,
                   :public_description,
                   :allow_student_forum_attachments,
+                  :enable_draft,
                   :allow_student_discussion_topics,
                   :allow_student_discussion_editing,
                   :default_wiki_editing_roles,
@@ -174,13 +175,14 @@ class Course < ActiveRecord::Base
   include Profile::Association
 
   before_save :assign_uuid
-  before_save :assert_defaults
+  before_validation :assert_defaults
   before_save :set_update_account_associations_if_changed
   before_save :update_enrollments_later
   after_save :update_final_scores_on_weighting_scheme_change
   after_save :update_account_associations_if_changed
   after_save :set_self_enrollment_code
   before_validation :verify_unique_sis_source_id
+  validates_presence_of :account_id, :root_account_id, :enrollment_term_id, :workflow_state
   validates_length_of :syllabus_body, :maximum => maximum_long_text_length, :allow_nil => true, :allow_blank => true
   validates_length_of :name, :maximum => maximum_string_length, :allow_nil => true, :allow_blank => true
   validates_length_of :course_code, :maximum => maximum_string_length, :allow_nil => true, :allow_blank => true
@@ -442,7 +444,7 @@ class Course < ActiveRecord::Base
   scope :recently_ended, lambda { where(:conclude_at => 1.month.ago..Time.zone.now).order("start_at DESC").limit(10) }
   scope :recently_created, lambda { where("created_at>?", 1.month.ago).order("created_at DESC").limit(50).includes(:teachers) }
   scope :for_term, lambda {|term| term ? where(:enrollment_term_id => term) : scoped }
-  scope :active_first, order("CASE WHEN courses.workflow_state='available' THEN 0 ELSE 1 END, name")
+  scope :active_first, lambda { order("CASE WHEN courses.workflow_state='available' THEN 0 ELSE 1 END, #{best_unicode_collation_key('name')}") }
   scope :name_like, lambda { |name| where(wildcard('courses.name', 'courses.sis_source_id', 'courses.course_code', name)) }
   scope :needs_account, lambda { |account, limit| where(:account_id => nil, :root_account_id => account).limit(limit) }
   scope :active, where("courses.workflow_state<>'deleted'")
@@ -1521,6 +1523,7 @@ class Course < ActiveRecord::Base
     limit_privileges_to_course_section = opts[:limit_privileges_to_course_section]
     associated_user_id = opts[:associated_user_id]
     role_name = opts[:role_name]
+    self_enrolled = opts[:self_enrolled]
     section ||= self.default_section
     enrollment_state ||= self.available? ? "invited" : "creation_pending"
     if type == 'TeacherEnrollment' || type == 'TaEnrollment' || type == 'DesignerEnrollment'
@@ -1556,6 +1559,7 @@ class Course < ActiveRecord::Base
     end
     e.associated_user_id = associated_user_id
     e.role_name = role_name
+    e.self_enrolled = self_enrolled
     if e.changed?
       if opts[:no_notify]
         e.save_without_broadcasting
@@ -1578,8 +1582,7 @@ class Course < ActiveRecord::Base
   end
 
   def self_enroll_student(user, opts = {})
-    enrollment = enroll_student(user, opts.merge(:no_notify => true))
-    enrollment.self_enrolled = true
+    enrollment = enroll_student(user, opts.merge(:self_enrolled => true))
     enrollment.accept(:force)
     unless opts[:skip_pseudonym]
       new_pseudonym = user.find_or_initialize_pseudonym_for_account(root_account)
@@ -1707,11 +1710,6 @@ class Course < ActiveRecord::Base
     end
   end
 
-  def file_structure_for(user)
-    User.file_structure_for(self, user)
-  end
-
-
   def merge_in(course, options = {}, import = nil)
     return [] if course == self
     res = merge_into_course(course, options, import)
@@ -1734,6 +1732,7 @@ class Course < ActiveRecord::Base
     pairs.uniq.each do |context_type, id|
       context = Context.find_by_asset_string("#{context_type}_#{id}") rescue nil
       if context
+        next if to_context.respond_to?(:context) && context == to_context.context
         if context.grants_right?(user, nil, :manage_content)
           html = self.migrate_content_links(html, context, to_context, content_types_to_copy)
         else
@@ -1796,14 +1795,16 @@ class Course < ActiveRecord::Base
     rewriter.set_default_handler do |match|
       new_url = match.url
       next(new_url) if supported_types && !supported_types.include?(match.type)
-      new_id = @merge_mappings["#{match.obj_class.name.underscore}_#{match.obj_id}"]
-      next(new_url) unless rewriter.user_can_view_content? { match.obj_class.find_by_id(match.obj_id) }
-      if !new_id && to_context != from_context
-        new_obj = self.find_or_create_for_new_context(match.obj_class, to_context, from_context, match.obj_id)
-        new_id = new_obj.id if new_obj
-      end
-      if !limit_migrations_to_listed_types || new_id
-        new_url = new_url.gsub("#{match.type}/#{match.obj_id}", new_id ? "#{match.type}/#{new_id}" : "#{match.type}")
+      if match.obj_id
+        new_id = @merge_mappings["#{match.obj_class.name.underscore}_#{match.obj_id}"]
+        next(new_url) unless rewriter.user_can_view_content? { match.obj_class.find_by_id(match.obj_id) }
+        if !new_id && to_context != from_context
+          new_obj = self.find_or_create_for_new_context(match.obj_class, to_context, from_context, match.obj_id)
+          new_id = new_obj.id if new_obj
+        end
+        if !limit_migrations_to_listed_types || new_id
+          new_url = new_url.gsub("#{match.type}/#{match.obj_id}", new_id ? "#{match.type}/#{new_id}" : "#{match.type}")
+        end
       end
       new_url.gsub("/#{from_name}/#{from_context.id}", "/#{to_name}/#{to_context.id}")
     end
@@ -2007,8 +2008,7 @@ class Course < ActiveRecord::Base
           end
         end
 
-        self.start_at ||= shift_options[:new_start_date]
-        self.conclude_at ||= shift_options[:new_end_date]
+        self.set_course_dates_if_blank(shift_options)
       end
     rescue
       add_migration_warning("Couldn't adjust the due dates.", $!)
@@ -2411,8 +2411,7 @@ class Course < ActiveRecord::Base
         end
         event.respond_to?(:save_without_broadcasting!) ? event.save_without_broadcasting! : event.save!
       end
-      self.start_at ||= shift_options[:new_start_date]
-      self.conclude_at ||= shift_options[:new_end_date]
+      self.set_course_dates_if_blank(shift_options)
     end
 
     self.save
@@ -2434,7 +2433,7 @@ class Course < ActiveRecord::Base
       :storage_quota, :tab_configuration, :allow_wiki_comments,
       :turnitin_comments, :self_enrollment, :license, :indexed, :locale,
       :hide_final_grade, :hide_distribution_graphs,
-      :allow_student_discussion_topics, :lock_all_announcements ]
+      :allow_student_discussion_topics, :lock_all_announcements, :enable_draft ]
   end
 
   # TODO: remove me? looks like only a single spec exercises this code (incidentally, no less)
@@ -2476,6 +2475,18 @@ class Course < ActiveRecord::Base
     result[:day_substitutions] = options[:day_substitutions]
     result[:time_zone] = options[:time_zone]
     result[:time_zone] ||= course.account.default_time_zone unless course.account.nil?
+
+    result[:default_start_at] = DateTime.parse(options[:new_start_date]) rescue self.real_start_date
+    result[:default_conclude_at] = DateTime.parse(options[:new_end_date]) rescue self.real_end_date
+    Time.use_zone(result[:time_zone] || Time.zone) do
+      # convert times
+      [:default_start_at, :default_conclude_at].each do |k|
+        old_time = result[k]
+        new_time = Time.utc(old_time.year, old_time.month, old_time.day, (old_time.hour rescue 0), (old_time.min rescue 0)).in_time_zone
+        new_time -= new_time.utc_offset
+        result[k] = new_time
+      end
+    end
     result
   end
 
@@ -2511,6 +2522,11 @@ class Course < ActiveRecord::Base
       log_merge_result("Events for #{old_date.to_s} moved to #{new_date.to_s}")
       new_time
     end
+  end
+
+  def set_course_dates_if_blank(shift_options)
+    self.start_at ||= shift_options[:default_start_at]
+    self.conclude_at ||= shift_options[:default_conclude_at]
   end
 
   def real_start_date
@@ -3141,5 +3157,11 @@ class Course < ActiveRecord::Base
   # Returns a boolean (default: false).
   def draft_state_enabled?
     (root_account.allow_draft? && enable_draft?) || root_account.enable_draft?
+  end
+
+  def serialize_permissions(permissions_hash, user, session)
+    permissions_hash.merge(
+      create_discussion_topic: DiscussionTopic.context_allows_user_to_create?(self, user, session)
+    )
   end
 end

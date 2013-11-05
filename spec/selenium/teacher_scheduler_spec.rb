@@ -199,8 +199,8 @@ describe "scheduler" do
           set_value(form.find_element(:css, '#body'), 'hello')
           submit_dialog(fj('.ui-dialog:visible'), '.ui-button')
           wait_for_ajaximations
-
-          fj('#message_participants_form').should be_nil # using fj to avoid selenium caching
+          # using fj to avoid selenium caching
+          keep_trying_until { fj('#message_participants_form').should be_nil }
         end
       end
       student1.conversations.first.messages.size.should == 6 # registered/all * 3

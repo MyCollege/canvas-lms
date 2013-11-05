@@ -112,7 +112,7 @@ class SisImportsApiController < ApplicationController
       raise "invalid import type parameter" unless SisBatch.valid_import_types.has_key?(params[:import_type])
 
       if !api_request? && @account.current_sis_batch.try(:importing?)
-        return render :json => {:error=>true, :error_message=> t(:sis_import_in_process_notice, "An SIS import is already in process."), :batch_in_progress=>true}.to_json,
+        return render :json => {:error=>true, :error_message=> t(:sis_import_in_process_notice, "An SIS import is already in process."), :batch_in_progress=>true},
                :as_text => true
       end
 
@@ -183,7 +183,7 @@ class SisImportsApiController < ApplicationController
         @account.save
       end
 
-      render :json => batch.api_json
+      render :json => batch
     end
   end
 
@@ -195,7 +195,7 @@ class SisImportsApiController < ApplicationController
       @batch = SisBatch.find(params[:id])
       raise "Sis Import not found" unless @batch
       raise "Batch does not match account" unless @batch.account.id == @account.id
-      render :json => @batch.api_json
+      render :json => @batch
     end
   end
 

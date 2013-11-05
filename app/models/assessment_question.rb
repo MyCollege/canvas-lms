@@ -29,6 +29,7 @@ class AssessmentQuestion < ActiveRecord::Base
   before_validation :infer_defaults
   after_save :translate_links_if_changed
   validates_length_of :name, :maximum => maximum_string_length, :allow_nil => true
+  validates_presence_of :workflow_state, :assessment_question_bank_id
 
   ALL_QUESTION_TYPES = ["multiple_answers_question", "fill_in_multiple_blanks_question", 
                         "matching_question", "missing_word_question", 
@@ -241,7 +242,7 @@ class AssessmentQuestion < ActiveRecord::Base
     question[:answers] = []
     reset_local_ids
     qdata[:answers] ||= previous_data[:answers] rescue []
-    answers = qdata[:answers].to_a.sort_by{|a| (a[0] || "").gsub(/answer_/, "").to_i || ""}
+    answers = qdata[:answers].to_a.sort_by{|a| (a[0] || "").gsub(/answer_/, "").to_i}
     if question[:question_type] == "multiple_choice_question"
       found_correct = false
       answers.each do |key, answer|
@@ -362,7 +363,7 @@ class AssessmentQuestion < ActiveRecord::Base
           :scale => variable[:scale].to_i
         }
       end
-      question[:answer_tolerance] = qdata[:answer_tolerance].to_f
+      question[:answer_tolerance] = qdata[:answer_tolerance]
       question[:formula_decimal_places] = qdata[:formula_decimal_places].to_i
       answers.each do |key, answer|
         obj = {:weight => 100, :variables => []}
@@ -481,7 +482,10 @@ class AssessmentQuestion < ActiveRecord::Base
           question_data[:qq_data][question['migration_id']] = question
           next
         end
-        next if question[:question_bank_migration_id] && !migration.import_object?("quizzes", question[:question_bank_migration_id])
+        next if question[:question_bank_migration_id] &&
+            !migration.import_object?("quizzes", question[:question_bank_migration_id]) &&
+            !migration.import_object?("assessment_question_banks", question[:question_bank_migration_id])
+
         if !question_bank
           hash_id = "#{question[:question_bank_id]}_#{question[:question_bank_name]}"
           if !banks[hash_id]

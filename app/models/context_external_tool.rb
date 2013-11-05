@@ -10,10 +10,9 @@ class ContextExternalTool < ActiveRecord::Base
                   :course_navigation, :account_navigation, :user_navigation,
                   :resource_selection, :editor_button, :homework_submission,
                   :config_type, :config_url, :config_xml, :tool_id
-  validates_presence_of :name
+  validates_presence_of :context_id, :context_type, :workflow_state
+  validates_presence_of :name, :consumer_key, :shared_secret
   validates_length_of :name, :maximum => maximum_string_length
-  validates_presence_of :consumer_key
-  validates_presence_of :shared_secret
   validates_presence_of :config_url, :if => lambda { |t| t.config_type == "by_url" }
   validates_presence_of :config_xml, :if => lambda { |t| t.config_type == "by_xml" }
   validates_length_of :domain, :maximum => 253, :allow_blank => true
@@ -432,7 +431,7 @@ class ContextExternalTool < ActiveRecord::Base
     contexts.each do |context|
       tools += context.context_external_tools.active
     end
-    tools.sort_by(&:name)
+    Canvas::ICU.collate_by(tools, &:name)
   end
   
   # Order of precedence: Basic LTI defines precedence as first
@@ -471,7 +470,7 @@ class ContextExternalTool < ActiveRecord::Base
     preferred_tool = ContextExternalTool.active.find_by_id(preferred_tool_id)
     return preferred_tool if preferred_tool && preferred_tool.resource_selection
 
-    sorted_external_tools = contexts.collect{|context| context.context_external_tools.active.sort_by{|t| [t.precedence, t.id == preferred_tool_id ? 0 : 1] }}.flatten(1)
+    sorted_external_tools = contexts.collect{|context| context.context_external_tools.active.sort_by{|t| [t.precedence, t.id == preferred_tool_id ? SortFirst : SortLast] }}.flatten(1)
 
     res = sorted_external_tools.detect{|tool| tool.url && tool.matches_url?(url) }
     return res if res

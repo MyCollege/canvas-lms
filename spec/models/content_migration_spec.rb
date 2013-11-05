@@ -38,6 +38,7 @@ describe ContentMigration do
       ce = ContentExport.new
       ce.export_type = ContentExport::COMMON_CARTRIDGE
       ce.content_migration = @cm
+      ce.course = @course
       @cm.content_export = ce
       ce.save!
 
@@ -64,6 +65,7 @@ describe ContentMigration do
     end
 
     def run_course_copy(warnings=[])
+      @cm.set_default_settings
       worker = Canvas::Migration::Worker::CourseCopyWorker.new
       worker.perform(@cm)
       @cm.reload
@@ -279,6 +281,10 @@ describe ContentMigration do
     end
 
     context "unpublished items" do
+      before :each do
+        Course.any_instance.stubs(:draft_state_enabled?).returns(true)
+      end
+
       it "should copy unpublished modules" do
         cm = @copy_from.context_modules.create!(:name => "some module")
         cm.publish
@@ -820,10 +826,13 @@ describe ContentMigration do
       @copy_to.quizzes.find_by_migration_id(mig_id(@quiz)).should_not be_nil
     end
 
-    it "should create a new assignment if copying a new quiz (even if the assignment migration_id matches)" do
+    it "should create a new assignment and module item if copying a new quiz (even if the assignment migration_id matches)" do
       pending unless Qti.qti_enabled?
       quiz = @copy_from.quizzes.create!(:title => "new quiz")
       quiz2 = @copy_to.quizzes.create!(:title => "already existing quiz")
+
+      mod = @copy_from.context_modules.create!(:name => "some module")
+      tag = mod.add_item({:id => quiz.id, :type => 'quiz'})
 
       [quiz, quiz2].each do |q|
         q.did_edit
@@ -838,20 +847,79 @@ describe ContentMigration do
 
       @copy_to.quizzes.map(&:title).sort.should == ["already existing quiz", "new quiz"]
       @copy_to.assignments.map(&:title).sort.should == ["already existing quiz", "new quiz"]
+      @copy_to.context_module_tags.map(&:title).should == ["new quiz"]
+    end
 
-      # Re-copying should find and update the old "new" quiz and assignment
+    it "should not duplicate quizzes and associated items if overwrite_quizzes is true" do
+      pending unless Qti.qti_enabled?
+      # overwrite_quizzes should now default to true for course copy and canvas import
+
+      quiz = @copy_from.quizzes.create!(:title => "published quiz")
+      quiz2 = @copy_from.quizzes.create!(:title => "unpublished quiz")
+      quiz.did_edit
+      quiz.offer!
+      quiz2.unpublish!
+
+      mod = @copy_from.context_modules.create!(:name => "some module")
+      tag = mod.add_item({:id => quiz.id, :type => 'quiz'})
+      tag2 = mod.add_item({:id => quiz2.id, :type => 'quiz'})
+
+      run_course_copy
+
+      @copy_to.quizzes.map(&:title).sort.should == ["published quiz", "unpublished quiz"]
+      @copy_to.assignments.map(&:title).sort.should == ["published quiz"]
+      @copy_to.context_module_tags.map(&:title).sort.should == ["published quiz", "unpublished quiz"]
+
+      @copy_to.quizzes.find_by_title("published quiz").should_not be_unpublished
+      @copy_to.quizzes.find_by_title("unpublished quiz").should be_unpublished
+
+      quiz.title = "edited published quiz"
+      quiz.save!
+      quiz2.title = "edited unpublished quiz"
+      quiz2.save!
+
+      # run again
       @cm = ContentMigration.new(:context => @copy_to, :user => @user, :source_course => @copy_from, :copy_options => {:everything => "1"})
       @cm.user = @user
       @cm.migration_settings[:import_immediately] = true
       @cm.save!
 
-      quiz.title = "mwhaha changed"
-      quiz.save!
+      run_course_copy
+
+      @copy_to.quizzes.map(&:title).sort.should == ["edited published quiz", "edited unpublished quiz"]
+      @copy_to.assignments.map(&:title).sort.should == ["edited published quiz"]
+      @copy_to.context_module_tags.map(&:title).sort.should == ["edited published quiz", "edited unpublished quiz"]
+
+      @copy_to.quizzes.find_by_title("edited published quiz").should_not be_unpublished
+      @copy_to.quizzes.find_by_title("edited unpublished quiz").should be_unpublished
+    end
+
+    it "should duplicate quizzes and associated items if overwrite_quizzes is false" do
+      pending unless Qti.qti_enabled?
+      quiz = @copy_from.quizzes.create!(:title => "published quiz")
+      quiz2 = @copy_from.quizzes.create!(:title => "unpublished quiz")
+      quiz.did_edit
+      quiz2.did_edit
+      quiz.offer!
+
+      mod = @copy_from.context_modules.create!(:name => "some module")
+      tag = mod.add_item({:id => quiz.id, :type => 'quiz'})
+      tag2 = mod.add_item({:id => quiz2.id, :type => 'quiz'})
 
       run_course_copy
 
-      @copy_to.quizzes.map(&:title).sort.should == ["already existing quiz", "mwhaha changed"]
-      @copy_to.assignments.map(&:title).sort.should == ["already existing quiz", "mwhaha changed"]
+      # run again
+      @cm = ContentMigration.new(:context => @copy_to, :user => @user, :source_course => @copy_from, :copy_options => {:everything => "1"})
+      @cm.user = @user
+      @cm.migration_settings[:import_immediately] = true
+      @cm.migration_settings[:overwrite_quizzes] = false
+      @cm.save!
+
+      run_course_copy
+
+      @copy_to.quizzes.map(&:title).sort.should == ["published quiz", "published quiz", "unpublished quiz", "unpublished quiz"]
+      @copy_to.assignments.map(&:title).sort.should == ["published quiz", "published quiz"]
+      @copy_to.context_module_tags.map(&:title).sort.should == ["published quiz", "published quiz", "unpublished quiz", "unpublished quiz"]
     end
 
     it "should have correct question count on copied surveys and practive quizzes" do
@@ -964,6 +1032,7 @@ describe ContentMigration do
     end
 
     it "should not copy plain text question comments as html" do
+      pending unless Qti.qti_enabled?
       bank1 = @copy_from.assessment_question_banks.create!(:title => 'bank')
       q = bank1.assessment_questions.create!(:question_data => {
           "question_type" => "multiple_choice_question", 'name' => 'test question',
@@ -1023,17 +1092,18 @@ describe ContentMigration do
       @copy_to.discussion_topics.find_by_migration_id(mig_id(topic)).should_not be_nil
     end
 
-    it "should copy selected announcements" do
-      ann = @copy_from.announcements.create!(:message => "howdy", :title => "announcement title")
+    it "should properly copy selected delayed announcements" do
+      from_ann = @copy_from.announcements.create!(:message => "goodbye", :title => "goodbye announcement", delayed_post_at: 1.hour.from_now)
+      from_ann.workflow_state = "post_delayed"
+      from_ann.save!
 
-      @cm.copy_options = {
-          :announcements => {mig_id(ann) => "1"},
-      }
+      @cm.copy_options = { :announcements => {mig_id(from_ann) => "1"}}
       @cm.save!
 
       run_course_copy
 
-      @copy_to.announcements.find_by_migration_id(mig_id(ann)).should_not be_nil
+      to_ann = @copy_to.announcements.find_by_migration_id(mig_id(from_ann))
+      to_ann.workflow_state.should == "post_delayed"
     end
 
     it "should not copy announcements if not selected" do
@@ -1509,10 +1579,14 @@ describe ContentMigration do
 
         it "using an explicit time zone" do
           new_date.should == copy_assignment(:time_zone => local_time_zone)
+          @copy_to.start_at.utc.should == Time.parse('2012-04-01 06:00:00 UTC')
+          @copy_to.conclude_at.utc.should == Time.parse('2012-04-15 06:00:00 UTC')
         end
 
         it "using the account time zone" do
           new_date.should == copy_assignment(:account_time_zone => local_time_zone)
+          @copy_to.start_at.utc.should == Time.parse('2012-04-01 06:00:00 UTC')
+          @copy_to.conclude_at.utc.should == Time.parse('2012-04-15 06:00:00 UTC')
         end
       end
 
@@ -1526,10 +1600,58 @@ describe ContentMigration do
 
         it "using an explicit time zone" do
           new_date.should == copy_assignment(:time_zone => local_time_zone)
+          @copy_to.start_at.utc.should == Time.parse('2012-12-01 07:00:00 UTC')
+          @copy_to.conclude_at.utc.should == Time.parse('2012-12-15 07:00:00 UTC')
         end
 
         it "using the account time zone" do
           new_date.should == copy_assignment(:account_time_zone => local_time_zone)
+          @copy_to.start_at.utc.should == Time.parse('2012-12-01 07:00:00 UTC')
+          @copy_to.conclude_at.utc.should == Time.parse('2012-12-15 07:00:00 UTC')
+        end
+      end
+
+      context "parsing dates with times" do
+        context "from MST to MDT" do
+          let(:old_date)       { local_time_zone.local(2012, 1, 6, 12, 0) } # 6 Jan 2012 12:00
+          let(:new_date)       { local_time_zone.local(2012, 4, 6, 12, 0) } # 6 Apr 2012 12:00
+          let(:old_start_date) { '2012-01-01T01:00:00' }
+          let(:old_end_date)   { '2012-01-15T01:00:00' }
+          let(:new_start_date) { '2012-04-01T01:00:00' }
+          let(:new_end_date)   { '2012-04-15T01:00:00' }
+
+          it "using an explicit time zone" do
+            new_date.should == copy_assignment(:time_zone => local_time_zone)
+            @copy_to.start_at.utc.should == Time.parse('2012-04-01 07:00:00 UTC')
+            @copy_to.conclude_at.utc.should == Time.parse('2012-04-15 07:00:00 UTC')
+          end
+
+          it "using the account time zone" do
+            new_date.should == copy_assignment(:account_time_zone => local_time_zone)
+            @copy_to.start_at.utc.should == Time.parse('2012-04-01 07:00:00 UTC')
+            @copy_to.conclude_at.utc.should == Time.parse('2012-04-15 07:00:00 UTC')
+          end
+        end
+
+        context "from MDT to MST" do
+          let(:old_date)       { local_time_zone.local(2012, 9, 6, 12, 0) }  # 6 Sep 2012 12:00
+          let(:new_date)       { local_time_zone.local(2012, 12, 6, 12, 0) } # 6 Dec 2012 12:00
+          let(:old_start_date) { '2012-09-01T01:00:00' }
+          let(:old_end_date)   { '2012-09-15T01:00:00' }
+          let(:new_start_date) { '2012-12-01T01:00:00' }
+          let(:new_end_date)   { '2012-12-15T01:00:00' }
+
+          it "using an explicit time zone" do
+            new_date.should == copy_assignment(:time_zone => local_time_zone)
+            @copy_to.start_at.utc.should == Time.parse('2012-12-01 08:00:00 UTC')
+            @copy_to.conclude_at.utc.should == Time.parse('2012-12-15 08:00:00 UTC')
+          end
+
+          it "using the account time zone" do
+            new_date.should == copy_assignment(:account_time_zone => local_time_zone)
+            @copy_to.start_at.utc.should == Time.parse('2012-12-01 08:00:00 UTC')
+            @copy_to.conclude_at.utc.should == Time.parse('2012-12-15 08:00:00 UTC')
+          end
         end
       end
     end
@@ -1619,7 +1741,7 @@ equation: <img class="equation_image" title="Log_216" src="/equation_images/Log_
       att4_2 = @copy_to.attachments.find_by_migration_id(mig_id(att4))
 
       q_to = @copy_to.quizzes.first
-      qq_to = q_to.quiz_questions.first
+      qq_to = q_to.active_quiz_questions.first
       qq_to.question_data[:question_text].should match_ignoring_whitespace(qtext % [@copy_to.id, att_2.id, @copy_to.id, "files/#{att2_2.id}/preview", @copy_to.id, "files/#{att4_2.id}/preview"])
       qq_to.question_data[:answers][0][:html].should match_ignoring_whitespace(%{File ref:<img src="/courses/#{@copy_to.id}/files/#{att3_2.id}/download">})
     end
@@ -1699,9 +1821,9 @@ equation: <img class="equation_image" title="Log_216" src="/equation_images/Log_
 
       @copy_to.quizzes.count.should == 1
       quiz = @copy_to.quizzes.first
-      quiz.quiz_questions.count.should == 1
+      quiz.active_quiz_questions.size.should == 1
 
-      qq = quiz.quiz_questions.first
+      qq = quiz.active_quiz_questions.first
       qq.question_data['question_type'].should == data[:question_type]
       qq.question_data['question_text'].should == data[:question_text]
     end
@@ -1947,7 +2069,8 @@ equation: <img class="equation_image" title="Log_216" src="/equation_images/Log_
 
   context "import_object?" do
     before do
-      @cm = ContentMigration.new
+      course
+      @cm = ContentMigration.new(context: @course)
     end
 
     it "should return true for everything if there are no copy options" do

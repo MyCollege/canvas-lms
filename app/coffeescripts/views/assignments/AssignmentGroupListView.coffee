@@ -17,37 +17,74 @@
 #
 define [
   'underscore'
-  'compiled/class/cache'
-  'compiled/views/CollectionView'
+  'Backbone'
+  'compiled/views/SortableCollectionView'
   'compiled/views/assignments/AssignmentGroupListItemView'
   'jst/assignments/AssignmentGroupList'
-], (_, Cache, CollectionView, AssignmentGroupListItemView, template) ->
+  'jst/assignments/NoAssignmentsListItem'
+], (_, Backbone, SortableCollectionView, AssignmentGroupListItemView, template, NoAssignmentsListItem) ->
 
-  class AssignmentGroupListView extends CollectionView
+  class AssignmentGroupListView extends SortableCollectionView
+    @optionProperty 'course'
+
     template: template
     itemView: AssignmentGroupListItemView
 
-    initialize: ->
-      super
-      $.extend true, this, Cache
+    @optionProperty 'assignment_sort_base_url'
 
-    renderItem: (model) ->
+    render: =>
+      super(ENV.PERMISSIONS.manage)
+
+    renderItem: (model) =>
       view = super
-      unless model.groupView.isExpanded()
-        model.groupView.toggle()
+      model.groupView.collapseIfNeeded()
       view
+
+    createItemView: (model) ->
+      options =
+        parentCollection: @collection
+        childKey: 'assignments'
+        groupKey: 'assignment_group_id'
+        groupId: model.id
+        reorderURL: @createReorderURL(model.id)
+        noItemTemplate: NoAssignmentsListItem
+      new @itemView $.extend {}, (@itemViewOptions || {}), {model}, options
+
+    createReorderURL: (id) ->
+      @assignment_sort_base_url + "/" + id + "/reorder"
+
+
+    # TODO: make menu a child view of listitem so that it can be rendered
+    # by itself, and so it can manage all of the dialog stuff,
+    # when that happens, this can be removed
+    attachCollection: ->
+      super
+      @itemViewOptions = course: @course
+      @collection.on 'add', @render
+      @collection.on 'remove', @render
+
+    renderOnReset: =>
+      @firstResetLanded = true
+      super
 
     toJSON: ->
       data = super
       _.extend({}, data,
-        firstResetLanded: not @empty
+        firstResetLanded: @firstResetLanded
       )
 
-    # This will be used when we implement searching
-    expandAll: ->
-      for m in @collection.models
-        if !m.groupView.isExpanded()
-          # force expand it
-          # but it will retain its state in cache
-          m.groupView.toggle()
+    _initSort: ->
+      super
+      @$list.on('sortstart', @collapse)
+      @$list.on('sortstop', @expand)
 
+    collapse: (e, ui) =>
+      id = ui.item.children(":first").data('id')
+      ui.item.find("#assignment_group_#{id}_assignments").slideUp(100)
+      ui.item.css("height", "auto")
+
+    expand: (e, ui) =>
+      id = ui.item.children(":first").data('id')
+      ag = @collection.findWhere id: parseInt(id)
+      if ag && ag.groupView.shouldBeExpanded()
+        ui.item.find("#assignment_group_#{id}_assignments").slideDown(100)

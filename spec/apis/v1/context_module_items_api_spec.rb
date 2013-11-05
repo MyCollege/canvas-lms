@@ -604,6 +604,24 @@ describe "Module Items API", :type => :integration do
       @assignment_tag.workflow_state.should == 'deleted'
     end
 
+    it "should show module item completion for a student" do
+      student = User.create!
+      @course.enroll_student(student).accept!
+
+      @assignment.submit_homework(student, :body => "done!")
+
+      json = api_call(:get, "/api/v1/courses/#{@course.id}/modules/#{@module1.id}/items?student_id=#{student.id}",
+                      :controller => "context_module_items_api", :action => "index", :format => "json",
+                      :course_id => "#{@course.id}", :student_id => "#{student.id}", :module_id => "#{@module1.id}")
+      json.find{|m| m["id"] == @assignment_tag.id}["completion_requirement"]["completed"].should == true
+
+      json = api_call(:get, "/api/v1/courses/#{@course.id}/modules/#{@module1.id}/items/#{@assignment_tag.id}?student_id=#{student.id}",
+                      :controller => "context_module_items_api", :action => "show", :format => "json",
+                      :course_id => "#{@course.id}", :module_id => "#{@module1.id}",
+                      :id => "#{@assignment_tag.id}", :student_id => "#{student.id}")
+      json["completion_requirement"]["completed"].should == true
+    end
+
     describe "GET 'module_item_sequence'" do
       it "should 400 if the asset_type is missing" do
         api_call(:get, "/api/v1/courses/#{@course.id}/module_item_sequence?asset_id=999",
@@ -700,6 +718,16 @@ describe "Module Items API", :type => :integration do
                         :course_id => @course.to_param, :asset_type => 'discussioN', :asset_id => other_topic.to_param)
         json['items'].size.should eql 1
         json['items'][0]['current']['id'].should eql wacky_tag.id
+      end
+
+      it "should deal with multiple modules having the same position" do
+        @module2.update_attribute(:position, 1)
+        json = api_call(:get, "/api/v1/courses/#{@course.id}/module_item_sequence?asset_type=quiz&asset_id=#{@quiz.id}",
+                         :controller => "context_module_items_api", :action => "item_sequence", :format => "json",
+                         :course_id => @course.to_param, :asset_type => 'quiz', :asset_id => @quiz.to_param)
+        json['items'].size.should eql 1
+        json['items'][0]['prev']['id'].should eql @assignment_tag.id
+        json['items'][0]['next']['id'].should eql @topic_tag.id
       end
 
       context "with duplicate items" do
@@ -873,6 +901,24 @@ describe "Module Items API", :type => :integration do
                {}, {},
                {:expected_status => 401}
       )
+    end
+
+    it "should not show module item completion for other students" do
+      student = User.create!
+      @course.enroll_student(student).accept!
+
+      api_call(:get, "/api/v1/courses/#{@course.id}/modules/#{@module1.id}/items?student_id=#{student.id}",
+                      {:controller => "context_module_items_api", :action => "index", :format => "json",
+                      :course_id => "#{@course.id}", :student_id => "#{student.id}", :module_id => "#{@module1.id}"},
+                      {}, {},
+                      {:expected_status => 401})
+
+      api_call(:get, "/api/v1/courses/#{@course.id}/modules/#{@module1.id}/items/#{@assignment_tag.id}?student_id=#{student.id}",
+                      {:controller => "context_module_items_api", :action => "show", :format => "json",
+                      :course_id => "#{@course.id}", :module_id => "#{@module1.id}",
+                      :id => "#{@assignment_tag.id}", :student_id => "#{student.id}"},
+                      {}, {},
+                      {:expected_status => 401})
     end
 
     describe "GET 'module_item_sequence'" do
