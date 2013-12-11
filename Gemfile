@@ -199,6 +199,7 @@ end
 
 group :production do
   gem 'newrelic_rpm'
+  gem "sentry-raven", :git => "https://github.com/getsentry/raven-ruby.git"
 end
 
 # Non-standard Canvas extension to Bundler behavior -- load the Gemfiles from
