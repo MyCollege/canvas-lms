@@ -19,7 +19,7 @@
 require File.expand_path(File.dirname(__FILE__) + '/../api_spec_helper')
 require File.expand_path(File.dirname(__FILE__) + '/../../sharding_spec_helper')
 
-describe ConversationsController, :type => :integration do
+describe ConversationsController, type: :request do
   before do
     @other = user(active_all: true)
 
@@ -512,7 +512,7 @@ describe ConversationsController, :type => :integration do
           raw_api_call(:post, "/api/v1/conversations",
                   { :controller => 'conversations', :action => 'create', :format => 'json' },
                   { :recipients => [@bob.id], :body => "test", :context_code => "account_#{Account.default.id}" })
-          response.status.to_i.should == 400
+          assert_status(400)
         end
 
         it "should allow site admin to set any account context" do
@@ -546,7 +546,7 @@ describe ConversationsController, :type => :integration do
             raw_api_call(:post, "/api/v1/conversations",
                     { :controller => 'conversations', :action => 'create', :format => 'json' },
                     { :recipients => [@bob.id], :body => "test", :context_code => "account_#{@sub_account.id}" })
-            response.status.to_i.should == 400
+            assert_status(400)
           end
         end
       end
@@ -741,8 +741,8 @@ describe ConversationsController, :type => :integration do
             m["forwarded_messages"].each {|fm| fm["participating_user_ids"].sort!}
           end
         end
-        conversation = @me.all_conversations.order("last_message_at DESC, conversation_id DESC").first
-        json.should eql [
+        conversation = @me.all_conversations.order(Conversation.nulls(:first, :last_message_at, :desc)).order("conversation_id DESC").first
+        expected = [
           {
             "id" => conversation.conversation_id,
             "subject" => nil,
@@ -790,6 +790,7 @@ describe ConversationsController, :type => :integration do
             ]
           }
         ]
+        json.should eql expected
       end
 
       it "should set subject" do
@@ -1369,7 +1370,6 @@ describe ConversationsController, :type => :integration do
         { :body => "ok", :recipients => [@admin.id.to_s] })
       real_conversation.reload
       new_message = real_conversation.conversation_messages.first
-      #debugger
       new_message.conversation_message_participants.size.should == 2
     end
 
@@ -1885,7 +1885,7 @@ describe ConversationsController, :type => :integration do
       json = raw_api_call(:delete, "/api/v1/conversations/#{conv.id}/delete_for_all",
         {:controller => 'conversations', :action => 'delete_for_all', :format => 'json', :id => conv.id.to_s},
         {:domain_root_account => Account.site_admin})
-      response.status.should eql "401 Unauthorized"
+      assert_status(401)
 
       account_admin_user
       p = Account.default.pseudonyms.create!(:unique_id => 'admin', :user => @user)
@@ -1893,13 +1893,13 @@ describe ConversationsController, :type => :integration do
       json = raw_api_call(:delete, "/api/v1/conversations/#{conv.id}/delete_for_all",
         {:controller => 'conversations', :action => 'delete_for_all', :format => 'json', :id => conv.id.to_s},
         {})
-      response.status.should eql "401 Unauthorized"
+      assert_status(401)
 
       user_session(@me)
       json = raw_api_call(:delete, "/api/v1/conversations/#{conv.id}/delete_for_all",
         {:controller => 'conversations', :action => 'delete_for_all', :format => 'json', :id => conv.id.to_s},
         {})
-      response.status.should eql "401 Unauthorized"
+      assert_status(401)
 
       @me.all_conversations.size.should eql 1
       @joe.conversations.size.should eql 1
@@ -1910,7 +1910,7 @@ describe ConversationsController, :type => :integration do
       json = raw_api_call(:delete, "/api/v1/conversations/0/delete_for_all",
         {:controller => 'conversations', :action => 'delete_for_all', :format => 'json', :id => "0"},
         {})
-      response.status.should eql "404 Not Found"
+      assert_status(404)
     end
 
     it "should delete the conversation for all participants" do

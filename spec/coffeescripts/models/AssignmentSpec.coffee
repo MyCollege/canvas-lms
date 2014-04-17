@@ -2,7 +2,8 @@ define [
   'compiled/models/Assignment'
   'compiled/models/Submission'
   'compiled/models/DateGroup'
-], (Assignment, Submission, DateGroup) ->
+  'helpers/fakeENV'
+], (Assignment, Submission, DateGroup, fakeENV) ->
 
   module "Assignment"
 
@@ -385,6 +386,32 @@ define [
     assignment = new Assignment
     deepEqual assignment.allDates(), []
 
+  module "Assignment#singleSectionDueDate",
+    setup: -> fakeENV.setup()
+    teardown: -> fakeENV.teardown()
+
+  test "gets the due date for section instead of null", ->
+    dueAt = new Date("2013-11-27T11:01:00Z")
+    assignment = new Assignment all_dates: [
+      {due_at: null, title: "Everyone"},
+      {due_at: dueAt, title: "Summer"}
+    ]
+    false_stub = sinon.stub assignment, "multipleDueDates"
+    false_stub.returns false
+    deepEqual assignment.singleSectionDueDate(), dueAt.toISOString()
+    false_stub.restore()
+
+  test "returns due_at when only one date/section are present", ->
+    date = Date.now()
+    assignment = new Assignment name: 'Taco party!'
+    assignment.set 'due_at', date
+    deepEqual assignment.singleSectionDueDate(), assignment.dueAt()
+
+    # For students
+    ENV.PERMISSIONS = { manage: false }
+    deepEqual assignment.singleSectionDueDate(), assignment.dueAt()
+    ENV.PERMISSIONS = {}
+
   module "Assignment#toView"
 
   test "returns the assignment's name", ->
@@ -511,6 +538,18 @@ define [
     assignment = new Assignment all_dates: [{title: "Summer"}, {title: "Winter"}]
     json = assignment.toView()
     equal json.allDates.length, 2
+
+  test "includes singleSectionDueDate", ->
+    dueAt = new Date("2013-11-27T11:01:00Z")
+    assignment = new Assignment all_dates: [
+      {due_at: null, title: "Everyone"},
+      {due_at: dueAt, title: "Summer"}
+    ]
+    false_stub = sinon.stub assignment, "multipleDueDates"
+    false_stub.returns false
+    json = assignment.toView()
+    equal json.singleSectionDueDate, dueAt.toISOString()
+    false_stub.restore()
 
   test "includes isQuiz", ->
     assignment = new Assignment("submission_types":["online_quiz"])

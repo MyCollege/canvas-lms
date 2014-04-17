@@ -7,9 +7,9 @@ define [
   'compiled/views/assignments/IndexView'
   'compiled/views/assignments/ToggleShowByView'
   'jquery'
-  'helpers/jquery.simulate'
   'helpers/fakeENV'
-], (Backbone, AssignmentGroup, Course, AssignmentGroupCollection, AssignmentGroupListView, IndexView, ToggleShowByView, $) ->
+  'helpers/jquery.simulate'
+], (Backbone, AssignmentGroup, Course, AssignmentGroupCollection, AssignmentGroupListView, IndexView, ToggleShowByView, $, fakeENV) ->
 
 
   fixtures = $('#fixtures')
@@ -51,13 +51,13 @@ define [
 
   module 'assignmentIndex',
     setup: ->
-      ENV.PERMISSIONS = {manage: true}
+      fakeENV.setup(PERMISSIONS: {manage: true})
       @enable_spy = sinon.spy(IndexView.prototype, 'enableSearch')
 
     teardown: ->
-      ENV.PERMISSIONS = {}
+      fakeENV.teardown()
       assignmentGroups = null
-      $('#fixtures').empty()
+      fixtures.empty()
       @enable_spy.restore()
 
   test 'should filter by search term', ->
@@ -106,12 +106,12 @@ define [
 
   module 'student index view',
     setup: ->
-      ENV.PERMISSIONS = {manage: false}
+      fakeENV.setup(PERMISSIONS: {manage: false})
 
     teardown: ->
-      ENV.PERMISSIONS = {}
+      fakeENV.teardown()
       assignmentGroups = null
-      $('#fixtures').empty()
+      fixtures.empty()
 
   test 'should clear search on toggle', ->
     clear_spy = sinon.spy(IndexView.prototype, 'clearSearch')

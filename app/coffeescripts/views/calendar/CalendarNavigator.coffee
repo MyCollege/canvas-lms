@@ -1,9 +1,10 @@
 define [
   'i18n!calendar',
+  'jquery'
   'underscore'
   'Backbone',
   'jst/calendar/calendarNavigator'
-], (I18n, _, Backbone, template) ->
+], (I18n, $, _, Backbone, template) ->
 
   class CalendarNavigator extends Backbone.View
     template: template
@@ -19,7 +20,7 @@ define [
       'click .navigate_today'       : '_triggerToday'
       'click .navigate_next'        : '_triggerNext'
       'click .navigation_title'     : '_onTitleClick'
-      'keydown .navigation_title'   : '_onTitleKeyDown'
+      'keyclick .navigation_title'  : '_onTitleClick'
 
     messages:
       invalid_date: I18n.t('input_is_invalid_date', "Input is not a valid date.")
@@ -27,11 +28,10 @@ define [
         I18n.t 'screenreader_date_suggestion', '%{date}. Press enter to accept.',
           date: dateText
 
-
     # options:
     #   hide       - set to true if this navigator should start hidden
-    #   showAgenda - set to true to activate agenda view features
     initialize: ->
+      super
       @render()
 
       # use debounce to make the aria-live updates nicer
@@ -86,7 +86,7 @@ define [
       @$dateField.val('')
 
     _titleActivated: ->
-      @showPicker() if @options.showAgenda
+      @showPicker()
 
     _dateFieldSelect: (selectedDateText) ->
       if @_enterKeyPressed
@@ -115,11 +115,6 @@ define [
     _onTitleClick: (event) ->
       event.preventDefault()
       @_titleActivated()
-
-    _onTitleKeyDown: (event) ->
-      if event.keyCode == 32 || event.keyCode == 13 # space or enter
-        event.preventDefault()
-        @_titleActivated()
 
     _onDateFieldKey: (event) =>
       if event.keyCode == 13 # enter

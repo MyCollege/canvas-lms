@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2013 Instructure, Inc.
+# Copyright (C) 2013 - 2014 Instructure, Inc.
 #
 # This file is part of Canvas.
 #
@@ -16,6 +16,8 @@
 # with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 
+require 'csv'
+
 module Canvas::AccountReports
 
   class OutcomeReports
@@ -25,6 +27,11 @@ module Canvas::AccountReports
     def initialize(account_report)
       @account_report = account_report
       extra_text_term(@account_report)
+      if @account_report.has_parameter? "include_deleted"
+        @include_deleted = @account_report.parameters["include_deleted"]
+        @account_report.parameters["extra_text"] << I18n.t(
+          'account_reports.grades.deleted', ' Include Deleted Objects: true;')
+      end
     end
 
     # retrieve the list of students for all active courses
@@ -45,11 +52,6 @@ module Canvas::AccountReports
     # - outcome result score
     def student_assignment_outcome_map
 
-      if @account_report.has_parameter? "include_deleted"
-        @include_deleted = @account_report.parameters["include_deleted"]
-        @account_report.parameters["extra_text"] << I18n.t(
-          'account_reports.grades.deleted', ' Include Deleted Objects: true;')
-      end
       parameters = {
         :account_id => account.id,
         :root_account_id => root_account.id
@@ -139,7 +141,7 @@ module Canvas::AccountReports
             row['submission date']=default_timezone_format(row['submission date'])
             csv << headers.map { |h| row[h] }
 
-            if i % 5 == 0
+            if i % 100 == 0
               Shackles.activate(:master) do
                 @account_report.update_attribute(:progress, (i.to_f/@total)*100)
               end
@@ -190,7 +192,7 @@ module Canvas::AccountReports
                  c.name                                      AS "course name",
                  c.id                                        AS "course id",
                  c.sis_source_id                             AS "course sis id",
-            CASE WHEN r.association_type = 'Quiz' THEN 'quiz'
+            CASE WHEN r.association_type IN ('Quiz', 'Quizzes::Quiz') THEN 'quiz'
                  WHEN ct.content_type = 'Assignment' THEN 'assignment'
                  END                                         AS "assessment type"}).
         joins("INNER JOIN learning_outcomes ON content_tags.content_id = learning_outcomes.id
@@ -201,12 +203,13 @@ module Canvas::AccountReports
                INNER JOIN pseudonyms p on p.user_id = r.user_id
                INNER JOIN courses c ON r.context_id = c.id
                LEFT OUTER JOIN quizzes q ON q.id = r.association_id
-                 AND r.association_type = 'Quiz'
+                 AND r.association_type IN ('Quiz', 'Quizzes::Quiz')
                LEFT OUTER JOIN assignments a ON a.id = ct.content_id
                  AND ct.content_type = 'Assignment'
                LEFT OUTER JOIN submissions subs ON subs.assignment_id = a.id
+                 AND subs.user_id = u.id
                LEFT OUTER JOIN quiz_submissions qs ON r.artifact_id = qs.id
-                 AND r.artifact_type = 'QuizSubmission'
+                 AND r.artifact_type IN ('QuizSubmission', 'Quizzes::QuizSubmission')
                LEFT OUTER JOIN assessment_questions aq ON aq.id = r.associated_asset_id
                  AND r.associated_asset_type = 'AssessmentQuestion'").
         where("ct.workflow_state <> 'deleted'
@@ -239,7 +242,7 @@ module Canvas::AccountReports
 
             csv << headers.map { |h| row[h] }
 
-            if i % 5 == 0
+            if i % 100 == 0
               Shackles.activate(:master) do
                 @account_report.update_attribute(:progress, (i.to_f/@total)*100)
               end

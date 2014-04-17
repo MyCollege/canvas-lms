@@ -23,7 +23,7 @@ describe PageView do
   before do
     # sets both @user and @course (@user is a teacher in @course)
     course_model
-    @page_view = PageView.new { |p| p.send(:attributes=, { :url => "http://test.one/", :session_id => "phony", :context => @course, :controller => 'courses', :action => 'show', :user_request => true, :render_time => 0.01, :user_agent => 'None', :account_id => Account.default.id, :request_id => "abcde", :interaction_seconds => 5, :user => @user }, false) }
+    @page_view = PageView.new { |p| p.assign_attributes({ :url => "http://test.one/", :session_id => "phony", :context => @course, :controller => 'courses', :action => 'show', :user_request => true, :render_time => 0.01, :user_agent => 'None', :account_id => Account.default.id, :request_id => "abcde", :interaction_seconds => 5, :user => @user }, :without_protection => true) }
   end
 
   describe "sharding" do
@@ -38,7 +38,7 @@ describe PageView do
   end
 
   describe "cassandra page views" do
-    it_should_behave_like "cassandra page views"
+    include_examples "cassandra page views"
     it "should store and load from cassandra" do
       expect {
         @page_view.save!
@@ -48,7 +48,7 @@ describe PageView do
     end
 
     it "should not start a db transaction on save" do
-      PageView.new { |p| p.send(:attributes=, { :user => @user, :url => "http://test.one/", :session_id => "phony", :context => @course, :controller => 'courses', :action => 'show', :user_request => true, :render_time => 0.01, :user_agent => 'None', :account_id => Account.default.id, :request_id => "abcdef", :interaction_seconds => 5 }, false) }.store
+      PageView.new { |p| p.assign_attributes({ :user => @user, :url => "http://test.one/", :session_id => "phony", :context => @course, :controller => 'courses', :action => 'show', :user_request => true, :render_time => 0.01, :user_agent => 'None', :account_id => Account.default.id, :request_id => "abcdef", :interaction_seconds => 5 }, :without_protection => true) }.store
       PageView.connection.expects(:transaction).never
       PageView.find("abcdef").should be_present
     end
@@ -143,15 +143,17 @@ describe PageView do
 
         Setting.set('enable_page_views', 'cassandra')
         migrator = PageView::CassandraMigrator.new
-        PageView.find(moved.map(&:request_id)).size.should == 0
+        PageView.find_all_by_id(moved.map(&:request_id)).size.should == 0
         migrator.run_once(2)
-        PageView.find(moved.map(&:request_id)).size.should == 2
+        PageView.find_all_by_id(moved.map(&:request_id)).size.should == 2
         # should migrate all active accounts
         PageView.find(moved_a3.request_id).request_id.should == moved_a3.request_id
         expect { PageView.find(moved_later.request_id) }.to raise_error(ActiveRecord::RecordNotFound)
         # it should resume where the last migrator left off
         migrator = PageView::CassandraMigrator.new
-        migrator.run_once(2)
+        # it could find the first two twice if we're on mysql, due to no sub-second precision,
+        # so do a batch of 3
+        migrator.run_once(3)
         PageView.find(moved.map(&:request_id) + [moved_later.request_id]).size.should == 3
 
         expect { PageView.find(deleted.request_id) }.to raise_error(ActiveRecord::RecordNotFound)
@@ -221,8 +223,8 @@ describe PageView do
         store_time_2 = Time.zone.parse('2012-01-13T15:47:52Z')
         @user1 = @user
         @user2 = user_model
-        pv2 = PageView.new { |p| p.send(:attributes=, { :user => @user2, :url => "http://test.one/", :session_id => "phony", :context => @course, :controller => 'courses', :action => 'show', :user_request => true, :render_time => 0.01, :user_agent => 'None', :account_id => Account.default.id, :request_id => "req1", :interaction_seconds => 5 }, false) }
-        pv3 = PageView.new { |p| p.send(:attributes=, { :user => @user2, :url => "http://test.one/", :session_id => "phony", :context => @course, :controller => 'courses', :action => 'show', :user_request => true, :render_time => 0.01, :user_agent => 'None', :account_id => Account.default.id, :request_id => "req2", :interaction_seconds => 5 }, false) }
+        pv2 = PageView.new { |p| p.assign_attributes({ :user => @user2, :url => "http://test.one/", :session_id => "phony", :context => @course, :controller => 'courses', :action => 'show', :user_request => true, :render_time => 0.01, :user_agent => 'None', :account_id => Account.default.id, :request_id => "req1", :interaction_seconds => 5 }, :without_protection => true) }
+        pv3 = PageView.new { |p| p.assign_attributes({ :user => @user2, :url => "http://test.one/", :session_id => "phony", :context => @course, :controller => 'courses', :action => 'show', :user_request => true, :render_time => 0.01, :user_agent => 'None', :account_id => Account.default.id, :request_id => "req2", :interaction_seconds => 5 }, :without_protection => true) }
         pv2.created_at = store_time
         pv3.created_at = store_time_2
         pv2.store.should be_true
@@ -257,7 +259,7 @@ describe PageView do
   describe '.generate' do
     let(:params) { {'action' => 'path', 'controller' => 'some'} }
     let(:session) { {:id => '42'} }
-    let(:request) { stub(:url => (@url || 'host.com/some/path'), :path_parameters => params, :user_agent => 'Mozilla', :session_options => session, :method => :get, :remote_ip => '0.0.0.0') }
+    let(:request) { stub(:url => (@url || 'host.com/some/path'), :path_parameters => params, :user_agent => 'Mozilla', :session_options => session, :method => :get, :remote_ip => '0.0.0.0', :request_method => 'GET') }
     let(:user) { User.new }
     let(:attributes) { {:real_user => user, :user => user } }
 
@@ -291,6 +293,145 @@ describe PageView do
       pv.reload
       pv.url.should ==  'http://canvas.example.com/api/v1/courses/1?access_token=[FILTERED]'
     end
+
+    it "should force encoding on string fields" do
+      request = stub(:url => (@url || 'host.com/some/path'), :path_parameters => params, :user_agent => 'Mozilla', :session_options => session, :method => :get, :remote_ip => '0.0.0.0'.encode(Encoding::US_ASCII), :request_method => 'GET')
+      pv = PageView.generate(request,attributes)
+
+      pv.remote_ip.encoding.should == Encoding::UTF_8
+    end
+  end
+
+  describe ".find_all_by_id" do
+    context "db-backed" do
+      before do
+        Setting.set('enable_page_views', 'db')
+      end
+
+      it "should return the existing page view" do
+        page_views = (0..3).map { |index| page_view_model }
+        page_view_ids = page_views.map { |page_view| page_view.request_id }
+
+        PageView.find_all_by_id(page_view_ids).should == page_views
+      end
+
+      it "should return nothing with unknown request id" do
+        PageView.find_all_by_id(['unknown', 'unknown']).size.should eql(0)
+      end
+    end
+
+    context "cassandra-backed" do
+      include_examples "cassandra page views"
+
+      it "should return the existing page view" do
+        page_views = (0..3).map { |index| page_view_model }
+        page_view_ids = page_views.map { |page_view| page_view.request_id }
+
+        PageView.find_all_by_id(page_view_ids).should == page_views
+      end
+
+      it "should return nothing with unknown request id" do
+        PageView.find_all_by_id(['unknown', 'unknown']).size.should eql(0)
+      end
+    end
+  end
+
+  if CANVAS_RAILS2
+    describe ".find_some" do
+      context "db-backed" do
+        before do
+          Setting.set('enable_page_views', 'db')
+        end
+
+        it "should return the existing page view" do
+          page_views = (0..3).map { |index| page_view_model }
+          page_view_ids = page_views.map { |page_view| page_view.request_id }
+
+          PageView.find_some(page_view_ids).should == page_views
+        end
+
+        it "should raise ActiveRecord::RecordNotFound with unknown request id" do
+          pv = page_view_model
+          expect { PageView.find_some([pv.request_id, 'unknown']) }.to raise_error(ActiveRecord::RecordNotFound)
+        end
+      end
+
+      context "cassandra-backed" do
+        include_examples "cassandra page views"
+
+        it "should return the existing page view" do
+          page_views = (0..3).map { |index| page_view_model }
+          page_view_ids = page_views.map { |page_view| page_view.request_id }
+
+          PageView.find_some(page_view_ids).should == page_views
+        end
+
+        it "should raise ActiveRecord::RecordNotFound with unknown request id" do
+          pv = page_view_model
+          expect { PageView.find_some([pv.request_id, 'unknown']) }.to raise_error(ActiveRecord::RecordNotFound)
+        end
+      end
+    end
+  end
+
+  describe ".find_by_id" do
+    context "db-backed" do
+      before do
+        Setting.set('enable_page_views', 'db')
+      end
+
+      it "should return the existing page view" do
+        pv = page_view_model
+        PageView.find_by_id(pv.request_id).should == pv
+      end
+
+      it "should return nothing with unknown request id" do
+        PageView.find_by_id('unknown').should be_nil
+      end
+    end
+
+    context "cassandra-backed" do
+      include_examples "cassandra page views"
+
+      it "should return the existing page view" do
+        pv = page_view_model
+        PageView.find_by_id(pv.request_id).should == pv
+      end
+
+      it "should return nothing with unknown request id" do
+        PageView.find_by_id('unknown').should be_nil
+      end
+    end
+  end
+
+   describe ".find_one" do
+    context "db-backed" do
+      before do
+        Setting.set('enable_page_views', 'db')
+      end
+
+      it "should return the existing page view" do
+        pv = page_view_model
+        PageView.find(pv.request_id).should == pv
+      end
+
+      it "should raise ActiveRecord::RecordNotFound with unknown request id" do
+        expect { PageView.find('unknown') }.to raise_error(ActiveRecord::RecordNotFound)
+      end
+    end
+
+    context "cassandra-backed" do
+      include_examples "cassandra page views"
+
+      it "should return the existing page view" do
+        pv = page_view_model
+        PageView.find(pv.request_id).should == pv
+      end
+
+      it "should raise ActiveRecord::RecordNotFound with unknown request id" do
+        expect { PageView.find('unknown') }.to raise_error(ActiveRecord::RecordNotFound)
+      end
+    end
   end
 
   describe ".find_for_update" do
@@ -310,7 +451,7 @@ describe PageView do
     end
 
     context "cassandra-backed" do
-      it_should_behave_like "cassandra page views"
+      include_examples "cassandra page views"
 
       it "should return the existing page view" do
         pv = page_view_model
@@ -354,15 +495,15 @@ describe PageView do
         page_view2 = @shard2.activate{ PageView.from_attributes(attributes) }
         [@shard1, @shard2].each do |shard|
           shard.activate do
-            page_view1.user_id.should == @shard1.relative_id_for(user_id)
-            page_view2.user_id.should == @shard2.relative_id_for(user_id)
+            page_view1.user_id.should == Shard.relative_id_for(user_id, @shard1, Shard.current)
+            page_view2.user_id.should == Shard.relative_id_for(user_id, @shard2, Shard.current)
           end
         end
       end
     end
 
     context "cassandra-backed" do
-      it_should_behave_like "cassandra page views"
+      include_examples "cassandra page views"
 
       it "should interpret ids relative to the default shard" do
         user_id = 1
@@ -371,8 +512,8 @@ describe PageView do
         page_view2 = @shard2.activate{ PageView.from_attributes(attributes) }
         [@shard1, @shard2].each do |shard|
           shard.activate do
-            page_view1.user_id.should == Shard.default.relative_id_for(user_id)
-            page_view2.user_id.should == Shard.default.relative_id_for(user_id)
+            page_view1.user_id.should == Shard.relative_id_for(user_id, Shard.default, Shard.current)
+            page_view2.user_id.should == Shard.relative_id_for(user_id, Shard.default, Shard.current)
           end
         end
       end

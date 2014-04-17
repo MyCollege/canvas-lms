@@ -16,13 +16,14 @@
 # with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 define [
+  'jquery'
   'underscore'
   'Backbone'
   'compiled/views/SortableCollectionView'
   'compiled/views/assignments/AssignmentGroupListItemView'
   'jst/assignments/AssignmentGroupList'
   'jst/assignments/NoAssignmentsListItem'
-], (_, Backbone, SortableCollectionView, AssignmentGroupListItemView, template, NoAssignmentsListItem) ->
+], ($, _, Backbone, SortableCollectionView, AssignmentGroupListItemView, template, NoAssignmentsListItem) ->
 
   class AssignmentGroupListView extends SortableCollectionView
     @optionProperty 'course'
@@ -60,6 +61,7 @@ define [
     attachCollection: ->
       super
       @itemViewOptions = course: @course
+      @collection.on 'render', @render
       @collection.on 'add', @render
       @collection.on 'remove', @render
       @collection.on 'change:groupWeights', @render

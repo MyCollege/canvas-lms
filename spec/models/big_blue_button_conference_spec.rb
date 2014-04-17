@@ -20,7 +20,7 @@ require File.expand_path(File.dirname(__FILE__) + '/../spec_helper.rb')
 require_relative('web_conference_spec_helper')
 
 describe BigBlueButtonConference do
-  it_should_behave_like 'WebConference'
+  include_examples 'WebConference'
 
   context "big_blue_button" do
     before do
@@ -145,6 +145,28 @@ describe BigBlueButtonConference do
                   recordings for the meetings'}
       bbb.stubs(:send_request).returns(response)
       bbb.recordings.should == []
+    end
+
+    it "should look for recordings only if record user setting is set" do
+      bbb = BigBlueButtonConference.new
+      bbb.user_settings = { :record => false }
+      bbb.user = user
+      bbb.context = Account.default
+
+      # set some vars so it thinks it's been created and doesn't do an api call
+      bbb.conference_key = 'test'
+      bbb.settings[:admin_key] = 'admin'
+      bbb.settings[:user_key] = 'user'
+      bbb.save
+
+      bbb.expects(:send_request).never
+      bbb.recordings
+
+      bbb.user_settings = { :record => true }
+      bbb.save
+
+      bbb.expects(:send_request)
+      bbb.recordings
     end
   end
 

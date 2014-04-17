@@ -21,14 +21,15 @@
 
 <% js_env :folder_id => @user.profile_pics_folder.id,
           :PASSWORD_POLICY => @domain_root_account.password_policy,
-          :PASSWORD_POLICIES => Hash[@password_pseudonyms.map{ |p| [p.id, p.account.password_policy]}]
+          :PASSWORD_POLICIES => Hash[@password_pseudonyms.map{ |p| [p.id, p.account.password_policy]}],
+          :PROFILE => @user_data
 %>
 <% js_bundle :profile %>
 <% jammit_css :profile_edit %>
 
 <% if service_enabled?(:avatars) %>
   <a href="#" class="profile_pic_link <%= @user.avatar_state %>" title="<%= t('titles.click_to_change_profile_pic', "Click to change profile pic") %>" style="float: left; margin-right: 5px; min-width: 50px; min-height: 50px; display: inline-block;">
-    <%= avatar_image(@user) %>
+    <%= square_avatar_image(@user) %>
 
     <i class="icon-edit"></i>
   </a>
@@ -550,6 +551,12 @@ TEXT
     <% end %>
   </div>
 </div>
+
+<h3><%= t(:feature_options, 'Feature Options') %></h3>
+<div class="feature-flag-wrapper">
+  <!-- this is populated by FeatureFlagAdminView -->
+</div>
+
 <div id="profile_pic_dialog" style="display: none;">
   <a href="<%= profile_pics_url %>" class="profile_pics_url" style="display: none;">&nbsp;</a>
   <%= t(:profile_pictures, "Select the image you'd like to use as your profile pic, or upload a new image:") %>

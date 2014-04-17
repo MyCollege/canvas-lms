@@ -26,11 +26,9 @@ class Rubric < ActiveRecord::Base
   has_many :rubric_assessments, :through => :rubric_associations, :dependent => :destroy
   has_many :learning_outcome_alignments, :as => :content, :class_name => 'ContentTag', :conditions => ['content_tags.tag_type = ? AND content_tags.workflow_state != ?', 'learning_outcome', 'deleted'], :include => :learning_outcome
 
-  before_save :default_values
-  after_save :update_alignments
   validates_presence_of :context_id, :context_type, :workflow_state
   validates_length_of :description, :maximum => maximum_text_length, :allow_nil => true, :allow_blank => true
-  validates_length_of :title, :maximum => maximum_text_length, :allow_nil => true, :allow_blank => true
+  validates_length_of :title, :maximum => maximum_string_length, :allow_nil => true, :allow_blank => true
 
   before_save :default_values
   after_save :update_alignments
@@ -127,7 +125,7 @@ class Rubric < ActiveRecord::Base
   def touch_associations
     if alignments_need_update?
       # associations might need to update their alignments also
-      rubric_associations.bookmarked.each &:touch
+      rubric_associations.bookmarked.each &:save
     end
   end
 
@@ -164,7 +162,7 @@ class Rubric < ActiveRecord::Base
       return res if res
     end
     purpose = opts[:purpose] || "unknown"
-    self.rubric_associations.create(:association => association, :context => context, :use_for_grading => !!opts[:use_for_grading], :purpose => purpose)
+    self.rubric_associations.create(:association_object => association, :context => context, :use_for_grading => !!opts[:use_for_grading], :purpose => purpose)
   end
 
   def update_with_association(current_user, rubric_params, context, association_params)
@@ -172,7 +170,7 @@ class Rubric < ActiveRecord::Base
     self.user ||= current_user
     rubric_params[:hide_score_total] ||= association_params[:hide_score_total]
     self.update_criteria(rubric_params)
-    RubricAssociation.generate(current_user, self, context, association_params) if association_params[:association] || association_params[:url]
+    RubricAssociation.generate(current_user, self, context, association_params) if association_params[:association_object] || association_params[:url]
   end
   
   def unique_item_id(id=nil)

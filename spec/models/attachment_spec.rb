@@ -1,6 +1,6 @@
 # coding: utf-8
 #
-# Copyright (C) 2011 - 2013 Instructure, Inc.
+# Copyright (C) 2011 - 2014 Instructure, Inc.
 #
 # This file is part of Canvas.
 #
@@ -27,7 +27,7 @@ describe Attachment do
     end
 
     it "should require a context" do
-      lambda{attachment_model(:context => nil)}.should raise_error(ActiveRecord::RecordInvalid, /Validation failed: Context can't be blank/)
+      lambda{attachment_model(:context => nil)}.should raise_error(ActiveRecord::RecordInvalid, /Context/)
     end
 
   end
@@ -267,6 +267,19 @@ describe Attachment do
         @attachment.should be_processed
       end
 
+      it "should not queue for non-root attachments" do
+        expects_job_with_tag('Attachment#submit_to_scribd!', 1) do
+          @attachment1 = scribdable_attachment_model
+          @attachment1.after_attachment_saved
+          @attachment2 = scribdable_attachment_model
+          # normally done by uploaded_data= in attachment_fu
+          @attachment2.root_attachment = @attachment1
+          @attachment2.after_attachment_saved
+        end
+        @attachment1.should be_pending_upload
+        @attachment2.should be_processed
+      end
+
       describe "scribd submit filtering" do
         it "should still submit if the attachment is tagged" do
           Attachment.stubs(:filtering_scribd_submits?).returns(true)
@@ -368,6 +381,17 @@ describe Attachment do
       att
     end
 
+    describe "clones with scribd" do
+      it 'should not copy scribd info on clone' do
+        a = attachment_with_scribd_doc(fake_scribd_doc('zero'))
+        course
+        new_a = a.clone_for(@course)
+        new_a.save!
+        new_a.read_attribute(:scribd_doc).should be_nil
+        new_a.scribd_doc.id.should == a.scribd_doc.id
+      end
+    end
+
     describe "related_attachments" do
       it "should include the root attachment" do
         @root = attachment_model
@@ -389,64 +413,20 @@ describe Attachment do
       end
     end
 
-    describe "scribd_doc_shared?" do
-      it "should be trivially false if there is no scribd_doc" do
-        attachment_model
-        @attachment.should_not be_scribd_doc_shared
-      end
-
-      it "should be false if there are no related attachments" do
-        attachment_with_scribd_doc.should_not be_scribd_doc_shared
-      end
-
-      it "should be false if related attachments have no scribd_docs" do
-        @root = attachment_model
-        @child1 = attachment_with_scribd_doc(fake_scribd_doc, :root_attachment => @root)
-        @child2 = attachment_with_scribd_doc(nil, :root_attachment => @root)
-        @child1.should_not be_scribd_doc_shared
-      end
-
-      it "should be false if related attachments have different scribd_docs" do
-        @root = attachment_with_scribd_doc(fake_scribd_doc('zero'))
-        @child1 = attachment_with_scribd_doc(fake_scribd_doc('one'), :root_attachment => @root)
-        @child2 = attachment_with_scribd_doc(fake_scribd_doc('two'), :root_attachment => @root)
-        @root.should_not be_scribd_doc_shared
-        @child1.should_not be_scribd_doc_shared
-      end
-
-      it "should be true if related attachment implicitly uses our doc_id" do
-        @root = attachment_with_scribd_doc(fake_scribd_doc('zero'))
-        @child1 = attachment_with_scribd_doc(nil, :root_attachment => @root)
-        @child2 = attachment_with_scribd_doc(nil, :root_attachment => @root)
-        @root.should be_scribd_doc_shared
-        @child1.should be_scribd_doc_shared
-      end
-
-      it "should be true if related attachment explicitly uses our doc_id" do
-        @root = attachment_model
-        @child1 = attachment_with_scribd_doc(fake_scribd_doc('what'), :root_attachment => @root)
-        @child2 = attachment_with_scribd_doc(fake_scribd_doc('what'), :root_attachment => @root)
-        @child1.should be_scribd_doc_shared
-      end
-    end
-
     describe "delete_scribd_doc" do
-      it "should skip deletion if the scribd_doc is shared" do
-        @root = attachment_with_scribd_doc(fake_scribd_doc('zero'))
-        @child = attachment_with_scribd_doc(fake_scribd_doc('zero'), :root_attachment => @root)
-        @child.scribd_doc.expects(:destroy).never
-        @child.destroy
-        @child.reload.workflow_state.should eql 'deleted'
-        @child.read_attribute(:scribd_doc).should be_nil
+      it "should delete the scribd doc" do
+        @att = attachment_with_scribd_doc(fake_scribd_doc('zero'))
+        @att.scribd_doc.expects(:destroy).once.returns(true)
+        @att.destroy
+        @att.reload.workflow_state.should eql 'deleted'
+        @att.read_attribute(:scribd_doc).should be_nil
       end
 
-      it "should delete the scribd doc" do
+      it "should do nothing for non-root attachments" do
         @root = attachment_with_scribd_doc(fake_scribd_doc('zero'))
         @child = attachment_with_scribd_doc(fake_scribd_doc('one'), :root_attachment => @root)
-        @child.scribd_doc.expects(:destroy).once.returns(true)
-        @child.destroy
-        @child.reload.workflow_state.should eql 'deleted'
-        @child.read_attribute(:scribd_doc).should be_nil
+        @child.scribd_doc.expects(:destroy).never
+        @child.delete_scribd_doc
       end
     end
 
@@ -701,17 +681,17 @@ describe Attachment do
       @attachment.file_state = 'available'
       @attachment.save!
     end
-    
+
     it "should disassociate but not delete the associated media object" do
       @attachment.media_entry_id = '0_feedbeef'
       @attachment.save!
-      
+
       media_object = @course.media_objects.build :media_id => '0_feedbeef'
       media_object.attachment_id = @attachment.id
       media_object.save!
-      
+
       @attachment.destroy
-      
+
       media_object.reload
       media_object.should_not be_deleted
       media_object.attachment_id.should be_nil
@@ -1184,17 +1164,32 @@ describe Attachment do
       @root = attachment_model
       @child = attachment_model(:root_attachment => @root)
       @new_account = account_model
+
+      @old_object = mock('old object')
+      @new_object = mock('new object')
+      new_full_filename = @root.full_filename.sub(@root.namespace, @new_account.file_namespace)
+      @objects = { @root.full_filename => @old_object, new_full_filename => @new_object }
+      @root.bucket.stubs(:objects).returns(@objects)
     end
 
     it "should fail for non-root attachments" do
-      AWS::S3::S3Object.any_instance.expects(:rename_to).never
+      @old_object.expects(:copy_to).never
       expect { @child.change_namespace(@new_account.file_namespace) }.to raise_error
       @root.reload.namespace.should == @old_account.file_namespace
       @child.reload.namespace.should == @root.reload.namespace
     end
 
+    it "should not copy if the destination exists" do
+      @new_object.expects(:exists?).returns(true)
+      @old_object.expects(:copy_to).never
+      @root.change_namespace(@new_account.file_namespace)
+      @root.namespace.should == @new_account.file_namespace
+      @child.reload.namespace.should == @root.namespace
+    end
+
     it "should rename root attachments and update children" do
-      AWS::S3::S3Object.any_instance.expects(:rename_to).with(@root.full_filename.sub(@old_account.id.to_s, @new_account.id.to_s), anything)
+      @new_object.expects(:exists?).returns(false)
+      @old_object.expects(:copy_to).with(@root.full_filename.sub(@old_account.id.to_s, @new_account.id.to_s), anything)
       @root.change_namespace(@new_account.file_namespace)
       @root.namespace.should == @new_account.file_namespace
       @child.reload.namespace.should == @root.namespace
@@ -1202,7 +1197,7 @@ describe Attachment do
   end
 
   context "dynamic thumbnails" do
-    let(:sz) { CollectionItemData::THUMBNAIL_SIZE }
+    let(:sz) { "640x>" }
 
     before do
       attachment_model(:uploaded_data => stub_png_data)
@@ -1598,6 +1593,44 @@ describe Attachment do
       @attachment.scribd_doc.should_not be_nil
     end
   end
+
+  context 'permissions' do
+    describe ':attach_to_submission_comment' do
+      it 'works for assignments if you own the attachment' do
+        @s1, @s2 = n_students_in_course(2)
+        @assignment = @course.assignments.create! name: 'blah'
+        @attachment = Attachment.create! context: @assignment,
+          filename: "foo.txt",
+          uploaded_data: StringIO.new("bar"),
+          user: @s1
+        @attachment.grants_right?(@s1, :attach_to_submission_comment).should be_true
+        @attachment.grants_right?(@s2, :attach_to_submission_comment).should be_false
+      end
+    end
+  end
+
+  describe "#full_path" do
+    it "shouldn't puke for things that don't have folders" do
+      attachment_obj_with_context(Account.default.default_enrollment_term)
+      @attachment.folder = nil
+      @attachment.full_path.should == "/#{@attachment.display_name}"
+    end
+  end
+
+  describe '.context_type' do
+    it 'returns the correct representation of a quiz statistics relation' do
+      stats = Quizzes::QuizStatistics.create!(report_type: 'student_analysis')
+      attachment = attachment_obj_with_context(Account.default.default_enrollment_term)
+      attachment.context = stats
+      attachment.save
+      attachment.context_type.should == "Quizzes::QuizStatistics"
+
+      Attachment.where(id: attachment).update_all(context_type: 'QuizStatistics')
+
+      Attachment.find(attachment.id).context_type.should == 'Quizzes::QuizStatistics'
+    end
+  end
+
 end
 
 def processing_model

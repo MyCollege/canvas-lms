@@ -81,21 +81,27 @@ body {
 
 #calendar-app .agenda-event {
   margin: 0;
+  outline: none;
+
   .ig-row {
     border: none;
     box-shadow: none;
     height: 30px;
     background: none;
     border-radius: 3px;
+
     &:hover, &:focus {
       background-color: #F2F4F6;
+      outline: none;
     }
   }
+
   .ig-title {
     background: none;
     font-weight: normal;
     top: 4px;
   }
+
   .ig-details {
     top: 4px;
   }
@@ -103,6 +109,9 @@ body {
 
 .agenda-actions {
   margin-left: 10%;
+  .agenda-load-btn {
+    margin-bottom: 20px;
+  }
 }
 
 #calendar_header {
@@ -137,7 +146,13 @@ body {
   }
 }
 
-#calendar-app {
+// Restore some missing drag styles from fullcalendar css
+#calendar-drag-and-drop-container .fc-event {
+  border-width: 1px;
+  border-radius: 3px;
+}
+
+#calendar-app,#calendar-drag-and-drop-container {
   .fc-content {
     background: none;
   }
@@ -184,6 +199,10 @@ body {
       }
     }
 
+    .fc-event {
+      white-space: nowrap;
+    }
+
     .calendar-nowline {
       background-color: #FACE90;
       position: absolute;
@@ -216,6 +235,9 @@ body {
 
   .fc-event {
     background-color: white;
+    i {
+      margin-right: 2px;
+    }
   }
 
   .fc-grid .fc-day-number {

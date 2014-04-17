@@ -28,6 +28,7 @@ define [
 
     setElement: ->
       super
+      @$el.attr 'data-tooltip', ''
       @disable() if !@model.get('unpublishable')
 
     # events
@@ -43,6 +44,7 @@ define [
 
     click: (event) ->
       event.preventDefault()
+      event.stopPropagation()
       return if @isDisabled()
       @keepState = true
       if @isPublish()
@@ -51,6 +53,7 @@ define [
         @unpublish()
 
     addAriaLabel: (label) ->
+      $('<span class="screenreader-only accessible_label"></span>').text(label).appendTo @$el
       @$el.attr 'aria-label', label
 
     # calling publish/unpublish on the model expects a deferred object
@@ -105,6 +108,7 @@ define [
 
     render: ->
       @$el.attr 'role', 'button'
+      @$el.attr 'tabindex', '0'
       @$el.html '<i></i><span class="publish-text"></span>'
       @cacheEls()
 
@@ -175,4 +179,5 @@ define [
       else
         @disable()
         @$el.attr 'aria-disabled', true
+        @$el.attr 'title', @model.disabledMessage()
         @addAriaLabel(@model.disabledMessage())

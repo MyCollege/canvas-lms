@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2011 - 2012 Instructure, Inc.
+# Copyright (C) 2011 - 2014 Instructure, Inc.
 #
 # This file is part of Canvas.
 #
@@ -66,6 +66,7 @@ describe Api::V1::User do
           'name' => 'User',
           'sortable_name' => 'User',
           'sis_user_id' => 'xyz',
+          'sis_import_id' => nil,
           'id' => @user.id,
           'short_name' => 'User',
           'login_id' => 'xyz',
@@ -77,11 +78,15 @@ describe Api::V1::User do
       @user = User.create!(:name => 'User')
       @account2 = Account.create!
       @user.pseudonyms.create!(:unique_id => 'abc', :account => Account.default)
-      @user.pseudonyms.create!(:unique_id => 'xyz', :account => Account.default) { |p| p.sis_user_id = 'xyz' }
+      p = @user.pseudonyms.create!(:unique_id => 'xyz', :account => Account.default) { |p| p.sis_user_id = 'xyz' }
+      sis_batch = p.account.sis_batches.create
+      SisBatch.where(id: sis_batch).update_all(workflow_state: 'imported')
+      Pseudonym.where(id: p.id).update_all(sis_batch_id: sis_batch.id)
       @test_api.user_json(@user, @admin, {}, [], Account.default).should == {
           'name' => 'User',
           'sortable_name' => 'User',
           'sis_user_id' => 'xyz',
+          'sis_import_id' => sis_batch.id,
           'id' => @user.id,
           'short_name' => 'User',
           'login_id' => 'xyz',
@@ -144,6 +149,7 @@ describe Api::V1::User do
                       "id"=>@student.id,
                       "short_name"=>"Student",
                       "login_id"=>"pvuser@example.com",
+                      "sis_import_id"=>@student.pseudonym.sis_batch_id,
                       "sis_login_id"=>"pvuser@example.com"}
     end
 
@@ -204,7 +210,7 @@ describe Api::V1::User do
 
 end
 
-describe "Users API", :type => :integration do
+describe "Users API", type: :request do
   def avatar_url(id)
     "http://www.example.com/images/users/#{User.avatar_key(id)}?fallback=http%3A%2F%2Fwww.example.com%2Fimages%2Fmessages%2Favatar-50.png"
   end
@@ -222,7 +228,7 @@ describe "Users API", :type => :integration do
     @user = @student
     raw_api_call(:get, "/api/v1/users/#{@admin.id}/avatars",
                  :controller => "profile", :action => "profile_pics", :user_id => @admin.to_param, :format => 'json')
-    response.status.should == "401 Unauthorized"
+    assert_status(401)
   end
 
   shared_examples_for "page view api" do
@@ -251,7 +257,7 @@ describe "Users API", :type => :integration do
         json.size.should == 1
         json.each { |j| j['url'].should == "http://www.example.com/courses/1" }
         response.headers['Link'].should_not match /next/
-        response.headers['Link'].should_not match /last/
+        response.headers['Link'].should match /last/
       end
 
       it "should recognize start_time parameter" do
@@ -274,11 +280,11 @@ describe "Users API", :type => :integration do
     end
   end
 
-  it_should_behave_like "page view api"
+  include_examples "page view api"
 
   describe "cassandra page views" do
-    it_should_behave_like "cassandra page views"
-    it_should_behave_like "page view api"
+    include_examples "cassandra page views"
+    include_examples "page view api"
   end
 
   it "shouldn't find users in other root accounts by sis id" do
@@ -292,7 +298,7 @@ describe "Users API", :type => :integration do
     @user = @me
     raw_api_call(:get, "/api/v1/users/sis_user_id:other-sis/page_views",
                        { :controller => "page_views", :action => "index", :user_id => 'sis_user_id:other-sis', :format => 'json' })
-    response.status.should == "404 Not Found"
+    assert_status(404)
   end
 
   it "should allow id of 'self'" do
@@ -319,6 +325,7 @@ describe "Users API", :type => :integration do
           'name' => user.name,
           'sortable_name' => user.sortable_name,
           'sis_user_id' => user.pseudonym.sis_user_id,
+          'sis_import_id' => nil,
           'id' => user.id,
           'short_name' => user.short_name,
           'login_id' => user.pseudonym.unique_id,
@@ -373,61 +380,153 @@ describe "Users API", :type => :integration do
   end
 
   describe "user account creation" do
-    it "should allow site admins to create users" do
-      json = api_call(:post, "/api/v1/accounts/#{@admin.account.id}/users",
-        { :controller => 'users', :action => 'create', :format => 'json', :account_id => @admin.account.id.to_s },
-        {
-          :user => {
-            :name          => "Test User",
-            :short_name    => "Test",
-            :sortable_name => "User, T.",
-            :time_zone     => "Mountain Time (US & Canada)",
-            :locale        => 'en'
-          },
-          :pseudonym => {
-            :unique_id         => "test@example.com",
-            :password          => "password123",
-            :sis_user_id       => "12345",
-            :send_confirmation => 0
-          }
-        }
+    def create_user_skip_cc_confirm(admin_user)
+      json = api_call(:post, "/api/v1/accounts/#{admin_user.account.id}/users",
+                      { :controller => 'users', :action => 'create', :format => 'json', :account_id => admin_user.account.id.to_s },
+                      {
+                          :user => {
+                              :name          => "Test User",
+                              :short_name    => "Test",
+                              :sortable_name => "User, T.",
+                              :time_zone     => "Mountain Time (US & Canada)",
+                              :locale        => 'en'
+                          },
+                          :pseudonym => {
+                              :unique_id         => "test@example.com",
+                              :password          => "password123",
+                              :sis_user_id       => "12345",
+                              :send_confirmation => 0
+                          },
+                          :communication_channel => {
+                              :type => "sms",
+                              :address => '8018888888',
+                              :skip_confirmation => 1
+                          }
+                      }
       )
       users = User.find_all_by_name "Test User"
       users.length.should eql 1
       user = users.first
-      user.name.should eql "Test User"
-      user.short_name.should eql "Test"
-      user.sortable_name.should eql "User, T."
-      user.time_zone.name.should eql "Mountain Time (US & Canada)"
-      user.locale.should eql 'en'
-
-      user.pseudonyms.count.should eql 1
-      pseudonym = user.pseudonyms.first
-      pseudonym.unique_id.should eql "test@example.com"
-      pseudonym.sis_user_id.should eql "12345"
-
-      JSON.parse(response.body).should == {
-        "name"          => "Test User",
-        "short_name"    => "Test",
-        "sortable_name" => "User, T.",
-        "id"            => user.id,
-        "sis_user_id"   => "12345",
-        "login_id"      => "test@example.com",
-        "sis_login_id"  => "test@example.com",
-        "locale"        => "en"
-      }
+      user.sms_channel.workflow_state.should == 'active'
     end
 
-    it "should not allow non-admins to create users" do
-      @user = @student
-      raw_api_call(:post, "/api/v1/accounts/#{@admin.account.id}/users",
-        { :controller => 'users', :action => 'create', :format => 'json', :account_id => @admin.account.id.to_s },
-        {
-          :user      => { :name => "Test User" },
-          :pseudonym => { :unique_id => "test@example.com", :password => "password123" }
+    context 'as a site admin' do
+      before do
+        @site_admin = user_with_pseudonym
+        Account.site_admin.add_user(@site_admin)
+      end
+
+      it "should allow site admins to create users" do
+        json = api_call(:post, "/api/v1/accounts/#{@site_admin.account.id}/users",
+          { :controller => 'users', :action => 'create', :format => 'json', :account_id => @site_admin.account.id.to_s },
+          {
+            :user => {
+              :name          => "Test User",
+              :short_name    => "Test",
+              :sortable_name => "User, T.",
+              :time_zone     => "Mountain Time (US & Canada)",
+              :locale        => 'en'
+            },
+            :pseudonym => {
+              :unique_id         => "test@example.com",
+              :password          => "password123",
+              :sis_user_id       => "12345",
+              :send_confirmation => 0
+            }
+          }
+        )
+        users = User.find_all_by_name "Test User"
+        users.length.should eql 1
+        user = users.first
+        user.name.should eql "Test User"
+        user.short_name.should eql "Test"
+        user.sortable_name.should eql "User, T."
+        user.time_zone.name.should eql "Mountain Time (US & Canada)"
+        user.locale.should eql 'en'
+
+        user.pseudonyms.count.should eql 1
+        pseudonym = user.pseudonyms.first
+        pseudonym.unique_id.should eql "test@example.com"
+        pseudonym.sis_user_id.should eql "12345"
+
+        JSON.parse(response.body).should == {
+          "name"          => "Test User",
+          "short_name"    => "Test",
+          "sortable_name" => "User, T.",
+          "id"            => user.id,
+          "sis_user_id"   => "12345",
+          "sis_import_id" => user.pseudonym.sis_batch_id,
+          "login_id"      => "test@example.com",
+          "sis_login_id"  => "test@example.com",
+          "locale"        => "en"
         }
-      )
-      response.status.should eql "403 Forbidden"
+      end
+
+      it "should allow site admins to create users and auto-validate communication channel" do
+        create_user_skip_cc_confirm(@site_admin)
+      end
+    end
+
+    context 'as an account admin' do
+      it "should allow account admins to create users and auto-validate communication channel" do
+        create_user_skip_cc_confirm(@admin)
+      end
+    end
+
+    context "as a non-administrator" do
+      before do
+        user(active_all: true)
+      end
+
+      it "should not let you create a user if self_registration is off" do
+        raw_api_call(:post, "/api/v1/accounts/#{@admin.account.id}/users",
+          { :controller => 'users', :action => 'create', :format => 'json', :account_id => @admin.account.id.to_s },
+          {
+            :user      => { :name => "Test User" },
+            :pseudonym => { :unique_id => "test@example.com" }
+          }
+        )
+        assert_status(403)
+      end
+
+      it "should require an email pseudonym" do
+        @admin.account.settings[:self_registration] = true
+        @admin.account.save!
+        raw_api_call(:post, "/api/v1/accounts/#{@admin.account.id}/users",
+          { :controller => 'users', :action => 'create', :format => 'json', :account_id => @admin.account.id.to_s },
+          {
+            :user      => { :name => "Test User", :terms_of_use => "1" },
+            :pseudonym => { :unique_id => "invalid" }
+          }
+        )
+        assert_status(400)
+      end
+
+      it "should require acceptance of the terms" do
+        @admin.account.settings[:self_registration] = true
+        @admin.account.save!
+        raw_api_call(:post, "/api/v1/accounts/#{@admin.account.id}/users",
+          { :controller => 'users', :action => 'create', :format => 'json', :account_id => @admin.account.id.to_s },
+          {
+            :user      => { :name => "Test User" },
+            :pseudonym => { :unique_id => "test@example.com" }
+          }
+        )
+        assert_status(400)
+      end
+
+      it "should let you create a user if you pass all the validations" do
+        @admin.account.settings[:self_registration] = true
+        @admin.account.save!
+        json = api_call(:post, "/api/v1/accounts/#{@admin.account.id}/users",
+          { :controller => 'users', :action => 'create', :format => 'json', :account_id => @admin.account.id.to_s },
+          {
+            :user      => { :name => "Test User", :terms_of_use => "1" },
+            :pseudonym => { :unique_id => "test@example.com" }
+          }
+        )
+        json['name'].should == 'Test User'
+      end
     end
 
     it "should send a confirmation if send_confirmation is set to 1" do
@@ -455,7 +554,7 @@ describe "Users API", :type => :integration do
           :pseudonym => { :password => "password123" }
         }
       )
-      response.status.should eql "400 Bad Request"
+      assert_status(400)
       errors = JSON.parse(response.body)['errors']
       errors['pseudonym'].should be_present
       errors['pseudonym']['unique_id'].should be_present
@@ -481,7 +580,7 @@ describe "Users API", :type => :integration do
           }
         }
       )
-      response.status.should eql "200 OK"
+      response.should be_success
       users = User.find_all_by_name "Test User"
       users.size.should == 1
       users.first.pseudonyms.first.unique_id.should == "test"
@@ -522,6 +621,7 @@ describe "Users API", :type => :integration do
           'name' => 'Tobias Funke',
           'sortable_name' => 'Funke, Tobias',
           'sis_user_id' => 'sis-user-id',
+          'sis_import_id' => nil,
           'id' => user.id,
           'short_name' => 'Tobias',
           'login_id' => 'student@example.com',
@@ -686,8 +786,7 @@ describe "Users API", :type => :integration do
 
         path = "/api/v1/accounts/#{Account.default.id}/users/#{id_param}"
         path_options = @path_options.merge(:id => id_param)
-
-        json = api_call(:delete, path, path_options)
+        api_call(:delete, path, path_options)
         response.code.should eql '200'
         @student.reload.should be_deleted
       end
@@ -718,9 +817,9 @@ describe "Users API", :type => :integration do
     before :each do
       @context = @user
     end
-    
-    it_should_behave_like "file uploads api with folders"
-    it_should_behave_like "file uploads api with quotas"
+
+    include_examples "file uploads api with folders"
+    include_examples "file uploads api with quotas"
 
     def preflight(preflight_params)
       api_call(:post, "/api/v1/users/self/files",
@@ -731,7 +830,7 @@ describe "Users API", :type => :integration do
     def has_query_exemption?
       false
     end
-      
+
     def context
       @user
     end
@@ -744,52 +843,61 @@ describe "Users API", :type => :integration do
     end
   end
 
-  describe "following" do
+    describe "user merge" do
     before do
-      @me = @user
-      @u2 = user_model
-      @user = @me
-      @u2.update_attribute(:public, true)
+      @account = Account.default
+      @user1 = user_with_managed_pseudonym(
+        active_all: true, account: @account, name: 'Jony Ive',
+        username: 'jony@apple.com', sis_user_id: 'user_sis_id_01'
+      )
+      @user2 = user_with_managed_pseudonym(
+        active_all: true, name: 'Steve Jobs', account: @account,
+        username: 'steve@apple.com', sis_user_id: 'user_sis_id_02'
+      )
+      @user = account_admin_user(account: @account)
     end
 
-    it "should allow following a public user" do
-      json = api_call(:put, "/api/v1/users/#{@u2.id}/followers/self", :controller => "users", :action => "follow", :user_id => @u2.to_param, :format => "json")
-      @user.user_follows.map(&:followed_item).should == [@u2]
-      uf = @user.user_follows.first
-      json.should == { "following_user_id" => @user.id, "followed_user_id" => @u2.id, "created_at" => uf.created_at.as_json }
+    it "should merge users" do
+      json = api_call(
+        :put, "/api/v1/users/#{@user2.id}/merge_into/#{@user1.id}",
+        { controller: 'users', action: 'merge_into', format: 'json',
+          id: @user2.to_param, destination_user_id: @user1.to_param }
+      )
+      Pseudonym.find_by_sis_user_id('user_sis_id_02').user_id.should == @user1.id
+      @user2.pseudonyms.should be_empty
     end
 
-    it "should do nothing if already following the user" do
-      @user.user_follows.create!(:followed_item => @u2)
-      uf = @user.user_follows.first
-      @user.user_follows.map(&:followed_item).should == [@u2]
+    it "should merge users cross accounts" do
+      account = Account.create(name: 'new account')
+      @user1.pseudonym.account_id = account.id
+      @user1.pseudonym.save!
+      @user = account_admin_user(account: account, user: @user)
 
-      json = api_call(:put, "/api/v1/users/#{@u2.id}/followers/self", :controller => "users", :action => "follow", :user_id => @u2.to_param, :format => "json")
-      @user.user_follows.map(&:followed_item).should == [@u2]
-      uf = @user.user_follows.first
-      json.should == { "following_user_id" => @user.id, "followed_user_id" => @u2.id, "created_at" => uf.created_at.as_json }
+      api_call(
+        :put,
+        "/api/v1/users/sis_user_id:user_sis_id_02/merge_into/accounts/#{account.id}/users/sis_user_id:user_sis_id_01",
+        { controller: 'users', action: 'merge_into', format: 'json',
+          id: 'sis_user_id:user_sis_id_02',
+          destination_user_id: 'sis_user_id:user_sis_id_01',
+          destination_account_id: account.to_param
+        }
+      )
+      Pseudonym.find_by_sis_user_id('user_sis_id_02').user_id.should == @user1.id
+      @user2.pseudonyms.should be_empty
     end
 
-    it "should not allow following a private user" do
-      @u2.update_attribute(:public, false)
-      json = api_call(:put, "/api/v1/users/#{@u2.id}/followers/self", { :controller => "users", :action => "follow", :user_id => @u2.to_param, :format => "json" }, {}, {}, :expected_status => 401)
-      @user.reload.user_follows.should == []
-    end
+    it "should fail to merge users cross accounts without permissions" do
+      account = Account.create(name: 'new account')
+      @user1.pseudonym.account_id = account.id
+      @user1.pseudonym.save!
 
-    describe "unfollowing" do
-      it "should allow unfollowing a collection" do
-        @user.user_follows.create!(:followed_item => @u2)
-        @user.reload.user_follows.map(&:followed_item).should == [@u2]
-
-        json = api_call(:delete, "/api/v1/users/#{@u2.id}/followers/self", :controller => "users", :action => "unfollow", :user_id => @u2.to_param, :format => "json")
-        @user.reload.user_follows.should == []
-      end
-
-      it "should do nothing if not following" do
-        @user.reload.user_follows.should == []
-        json = api_call(:delete, "/api/v1/users/#{@u2.id}/followers/self", :controller => "users", :action => "unfollow", :user_id => @u2.to_param, :format => "json")
-        @user.reload.user_follows.should == []
-      end
+      raw_api_call(
+        :put,
+        "/api/v1/users/#{@user2.id}/merge_into/#{@user1.id}",
+        { controller: 'users', action: 'merge_into', format: 'json',
+          id: @user2.to_param, destination_user_id: @user1.to_param}
+      )
+      assert_status(401)
     end
   end
 end

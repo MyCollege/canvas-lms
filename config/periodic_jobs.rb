@@ -9,12 +9,13 @@
 # Periodic jobs default to low priority. You can override this in the arguments
 # passed to Delayed::Periodic.cron
 
-if ActionController::Base.session_store == ActiveRecord::SessionStore
+session_store = CANVAS_RAILS2 ? ActionController::Base.session_store : Rails.configuration.session_store
+if session_store == ActiveRecord::SessionStore
   expire_after = (Setting.from_config("session_store") || {})[:expire_after]
   expire_after ||= 1.day
 
   Delayed::Periodic.cron 'ActiveRecord::SessionStore::Session.delete_all', '*/5 * * * *' do
-    Shard.with_each_shard do
+    Shard.with_each_shard(exception: -> { ErrorReport.log_exception(:periodic_job, $!) }) do
       ActiveRecord::SessionStore::Session.delete_all(['updated_at < ?', expire_after.ago])
     end
   end
@@ -23,32 +24,32 @@ end
 persistence_token_expire_after = (Setting.from_config("session_store") || {})[:expire_remember_me_after]
 persistence_token_expire_after ||= 1.month
 Delayed::Periodic.cron 'SessionPersistenceToken.delete_all', '35 11 * * *' do
-  Shard.with_each_shard do
+  Shard.with_each_shard(exception: -> { ErrorReport.log_exception(:periodic_job, $!) }) do
     SessionPersistenceToken.delete_all(['updated_at < ?', persistence_token_expire_after.ago])
   end
 end
 
 Delayed::Periodic.cron 'ExternalFeedAggregator.process', '*/30 * * * *' do
-  Shard.with_each_shard do
+  Shard.with_each_shard(exception: -> { ErrorReport.log_exception(:periodic_job, $!) }) do
     ExternalFeedAggregator.process
   end
 end
 
 Delayed::Periodic.cron 'SummaryMessageConsolidator.process', '*/15 * * * *' do
   Shard.with_each_shard do
-    SummaryMessageConsolidator.process
+    SummaryMessageConsolidator.send_later_enqueue_args(:process, strand: "SummaryMessageConsolidator.process:#{Shard.current.database_server.id}", max_attempts: 1)
   end
 end
 
 if ScribdAPI.enabled?
   Delayed::Periodic.cron 'Attachment.process_scribd_conversion_statuses', '*/5 * * * *' do
-    Shard.with_each_shard do
+    Shard.with_each_shard(exception: -> { ErrorReport.log_exception(:periodic_job, $!) }) do
       Attachment.process_scribd_conversion_statuses
     end
   end
 
   Delayed::Periodic.cron 'Attachment.delete_stale_scribd_docs', '15 11 * * *' do
-    Shard.with_each_shard do
+    Shard.with_each_shard(exception: -> { ErrorReport.log_exception(:periodic_job, $!) }) do
       Attachment.delete_stale_scribd_docs
     end
   end
@@ -56,7 +57,7 @@ end
 
 Delayed::Periodic.cron 'CrocodocDocument.update_process_states', '*/5 * * * *' do
   if Canvas::Crocodoc.config
-    Shard.with_each_shard do
+    Shard.with_each_shard(exception: -> { ErrorReport.log_exception(:periodic_job, $!) }) do
       CrocodocDocument.update_process_states
     end
   end
@@ -67,7 +68,7 @@ Delayed::Periodic.cron 'Reporting::CountsReport.process', '0 11 * * *' do
 end
 
 Delayed::Periodic.cron 'StreamItem.destroy_stream_items', '45 11 * * *' do
-  Shard.with_each_shard do
+  Shard.with_each_shard(exception: -> { ErrorReport.log_exception(:periodic_job, $!) }) do
     StreamItem.destroy_stream_items_using_setting
   end
 end
@@ -81,7 +82,7 @@ end
 Delayed::Periodic.cron 'ErrorReport.destroy_error_reports', '35 */1 * * *' do
   cutoff = Setting.get('error_reports_retain_for', 3.months.to_s).to_i
   if cutoff > 0
-    Shard.with_each_shard do
+    Shard.with_each_shard(exception: -> { ErrorReport.log_exception(:periodic_job, $!) }) do
       ErrorReport.destroy_error_reports(cutoff.ago)
     end
   end
@@ -100,7 +101,7 @@ Delayed::Periodic.cron 'Alert.process', '30 11 * * *', :priority => Delayed::LOW
 end
 
 Delayed::Periodic.cron 'Attachment.do_notifications', '*/10 * * * *', :priority => Delayed::LOW_PRIORITY do
-  Shard.with_each_shard do
+  Shard.with_each_shard(exception: -> { ErrorReport.log_exception(:periodic_job, $!) }) do
     Attachment.do_notifications
   end
 end

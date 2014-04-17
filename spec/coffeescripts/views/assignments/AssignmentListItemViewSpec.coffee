@@ -4,9 +4,9 @@ define [
   'compiled/models/Submission'
   'compiled/views/assignments/AssignmentListItemView'
   'jquery'
-  'helpers/jquery.simulate'
   'helpers/fakeENV'
-], (Backbone, Assignment, Submission, AssignmentListItemView, $) ->
+  'helpers/jquery.simulate'
+], (Backbone, Assignment, Submission, AssignmentListItemView, $, fakeENV) ->
   screenreaderText = null
   nonScreenreaderText = null
 
@@ -115,10 +115,14 @@ define [
 
     view
 
+  genModules = (count) ->
+    if count == 1
+      ["First"]
+    else
+      ["First", "Second"]
+
   genSetup = (model=assignment1()) ->
-    ENV = window.ENV ||= {}
-    ENV.PERMISSIONS = {manage: false}
-    window.ENV = ENV
+    fakeENV.setup(PERMISSIONS: {manage: false})
 
     @model = model
     @submission = new Submission
@@ -129,7 +133,7 @@ define [
       $.trim @view.$('.js-score .non-screenreader').text()
 
   genTeardown = ->
-    ENV.PERMISSIONS = {}
+    fakeENV.teardown()
     $('#fixtures').empty()
 
 
@@ -273,6 +277,20 @@ define [
     @server.respond()
 
     equal @model.get('published'), true
+
+  test "correctly displays module's name", ->
+    mods = genModules(1)
+    @model.set('modules', mods)
+    view = createView(@model)
+    ok view.$(".modules").text().search("#{mods[0]} Module") != -1
+
+  test "correctly display's multiple modules", ->
+    mods = genModules(2)
+    @model.set('modules', mods)
+    view = createView(@model)
+    ok view.$(".modules").text().search("Multiple Modules") != -1
+    ok view.$("#module_tooltip_#{@model.id}").text().search("#{mods[0]}") != -1
+    ok view.$("#module_tooltip_#{@model.id}").text().search("#{mods[1]}") != -1
 
   module 'AssignmentListItemViewSpec—alternate grading type: percent',
     setup: ->

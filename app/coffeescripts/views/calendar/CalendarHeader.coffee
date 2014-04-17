@@ -1,15 +1,17 @@
 define [
   'i18n!calendar',
+  'jquery'
   'Backbone',
   'jst/calendar/calendarHeader'
   'compiled/views/calendar/CalendarNavigator'
-], (I18n, Backbone, template, CalendarNavigator) ->
+], (I18n, $, Backbone, template, CalendarNavigator) ->
 
   class CalendarHeader extends Backbone.View
     template: template
 
     els:
       '.calendar_view_buttons'   : '$calendarViewButtons'
+      '.recommend_agenda'        : '$recommendAgenda'
       '.calendar_navigator'      : '$navigator'
       '.appointment_group_title' : '$appointmentGroupTitle'
       '.scheduler_done_button'   : '$schedulerDoneButton'
@@ -20,17 +22,16 @@ define [
       'click #week'      : '_triggerWeek'
       'click #month'     : '_triggerMonth'
       'click #agenda'    : '_triggerAgenda'
+      'click #use_agenda': '_selectAgenda'
       'click #scheduler' : '_triggerScheduler'
       'click .scheduler_done_button': '_triggerDone'
       'click #create_new_event_link': '_triggerCreateNewEvent'
       'click #refresh_calendar_link': '_triggerRefreshCalendar'
 
     initialize: ->
+      super
       @render()
-      @navigator = new CalendarNavigator(
-        el: @$navigator
-        showAgenda: @options.showAgenda
-      )
+      @navigator = new CalendarNavigator(el: @$navigator)
       @showNavigator()
       # The badge is part of the buttonset, so we can't find it beforehand with els
       @$badge = @$el.find('.counter-badge')
@@ -73,6 +74,12 @@ define [
       @$appointmentGroupTitle.hide()
       @$schedulerDoneButton.show()
 
+    showAgendaRecommendation: ->
+      @$recommendAgenda.show()
+
+    hideAgendaRecommendation: ->
+      @$recommendAgenda.hide()
+
     setHeaderText: (newText) =>
       @navigator.setTitle(newText)
 
@@ -91,6 +98,9 @@ define [
     hidePrevNext: ->
       @navigator.hidePrevNext()
 
+    _selectAgenda: (event) ->
+      @selectView('agenda')
+
     _triggerDone: (event) ->
       @trigger('done')
 
@@ -102,7 +112,7 @@ define [
 
     _triggerAgenda: (event) ->
       @trigger('agenda')
-
+ 
     _triggerScheduler: (event) ->
       @trigger('scheduler')
 

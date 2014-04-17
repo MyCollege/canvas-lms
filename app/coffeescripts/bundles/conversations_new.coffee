@@ -1,5 +1,6 @@
 require [
   'i18n!conversations'
+  'jquery'
   'underscore'
   'Backbone'
   'compiled/models/Message'
@@ -13,14 +14,14 @@ require [
   'compiled/collections/CourseCollection'
   'compiled/collections/FavoriteCourseCollection'
   'jquery.disableWhileLoading'
-], (I18n, _, Backbone, Message, MessageCollection, MessageView, MessageListView, MessageDetailView, MessageFormDialog,
+], (I18n, $, _, Backbone, Message, MessageCollection, MessageView, MessageListView, MessageDetailView, MessageFormDialog,
  InboxHeaderView, deparam, CourseCollection, FavoriteCourseCollection) ->
 
   class ConversationsRouter extends Backbone.Router
 
     routes:
       '': 'index'
-      'filter?:state': 'filter'
+      'filter=:state': 'filter'
 
     messages:
       confirmDelete: I18n.t('confirm.delete_conversation', 'Are you sure you want to delete your copy of this conversation? This action cannot be undone.')
@@ -62,7 +63,10 @@ require [
       @list.selectedMessages = [] if event == 'unstar'       && @filters.type == 'starred'
       messages
 
+    lastFetch: null
+
     onSelected: (model) =>
+      @lastFetch.abort() if @lastFetch
       @header.onModelChange(null, @model)
       @model = model
       messages = @list.selectedMessages
@@ -82,7 +86,8 @@ require [
         if model.get('messages')
           @selectConversation(model)
         else
-          @detail.$el.disableWhileLoading(model.fetch(success: @selectConversation))
+          @lastFetch = model.fetch(success: @selectConversation)
+          @detail.$el.disableWhileLoading(@lastFetch)
 
     selectConversation: (model) =>
       @header.onModelChange(model, null)
@@ -141,7 +146,9 @@ require [
 
     onMarkUnread: =>
       @batchUpdate('mark_as_unread', (m) -> m.toggleReadState(false))
-      @header.onReadStateChange()
+
+    onMarkRead: =>
+      @batchUpdate('mark_as_read', (m) -> m.toggleReadState(true))
 
     onForward: (message) =>
       model = if message
@@ -164,7 +171,7 @@ require [
         @list.collection.remove(messages)
 
     onFilter: (filters) =>
-      @navigate('filter?'+$.param(filters), {trigger: true})
+      @navigate('filter='+$.param(filters), {trigger: true})
 
     onCourse: (course) =>
       @list.updateCourse(course)
@@ -208,6 +215,7 @@ require [
       @header.on('filter',      @onFilter)
       @header.on('course',      @onCourse)
       @header.on('mark-unread', @onMarkUnread)
+      @header.on('mark-read', @onMarkRead)
       @header.on('forward',     @onForward)
       @header.on('star-toggle', @onStarToggle)
       @header.on('search',      @onSearch)
@@ -220,6 +228,7 @@ require [
       @detail.on('reply-all',   @onReplyAll)
       @detail.on('forward',     @onForward)
       $(document).ready(@onPageLoad)
+      $(window).keydown(@onKeyDown)
 
     onPageLoad: (e) ->
       # we add the top style here instead of in the css because
@@ -256,6 +265,9 @@ require [
       @list.collection.reset()
       @searchTokens = if tokens.length then tokens else null
       @list.collection.setParam('filter', @_currentFilter())
+      delete @detail.model
+      @list.selectedMessages = []
+      @detail.render()
       @list.collection.fetch()
 
     _initListView: ->
@@ -280,6 +292,14 @@ require [
         folderId: ENV.CONVERSATIONS.ATTACHMENTS_FOLDER_ID
         account_context_code: ENV.CONVERSATIONS.ACCOUNT_CONTEXT_CODE
 
+    onKeyDown: (e) =>
+      nodeName = e.target.nodeName.toLowerCase()
+      return if nodeName == 'input' || nodeName == 'textarea'
+      ctrl = e.ctrlKey || e.metaKey
+      if e.which == 65 && ctrl # ctrl-a
+        e.preventDefault()
+        @list.selectAll()
+        return
 
   window.conversationsRouter = new ConversationsRouter
   Backbone.history.start()

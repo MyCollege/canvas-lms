@@ -1,9 +1,11 @@
 define [
+  'jquery'
   'underscore'
   'compiled/views/groups/manage/GroupCategoryView'
   'compiled/views/groups/manage/RandomlyAssignMembersView'
   'compiled/models/GroupCategory'
-], (_, GroupCategoryView, RandomlyAssignMembersView, GroupCategory) ->
+  'helpers/fakeENV'
+], ($, _, GroupCategoryView, RandomlyAssignMembersView, GroupCategory) ->
 
   server = null
   view = null
@@ -28,7 +30,6 @@ define [
         "storage_quota_mb": 50,
         "context_type": "Course",
         "course_id": 1,
-        "followed_by_user": false,
         "avatar_url": null,
         "role": null
       },
@@ -43,7 +44,6 @@ define [
         "storage_quota_mb": 50,
         "context_type": "Course",
         "course_id": 1,
-        "followed_by_user": false,
         "avatar_url": null,
         "role": null
       },
@@ -58,7 +58,6 @@ define [
         "storage_quota_mb": 50,
         "context_type": "Course",
         "course_id": 1,
-        "followed_by_user": false,
         "avatar_url": null,
         "role": null
       }

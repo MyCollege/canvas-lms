@@ -40,21 +40,23 @@ class ContextController < ApplicationController
       render :json => @media_object
     end
   end
-  
+
   def media_object_inline
     @show_embedded_chat = false
     @show_left_side = false
     @show_right_side = false
     @media_object = MediaObject.by_media_id(params[:id]).first
+    js_env(MEDIA_OBJECT_ID: params[:id],
+           MEDIA_OBJECT_TYPE: @media_object ? @media_object.media_type.to_s : 'video')
     render
   end
-  
+
   def media_object_redirect
     mo = MediaObject.by_media_id(params[:id]).first
     mo.viewed! if mo
     config = Kaltura::ClientV3.config
     if config
-      redirect_to Kaltura::ClientV3.new.assetSwfUrl(params[:id], request.ssl? ? "https" : "http")
+      redirect_to Kaltura::ClientV3.new.assetSwfUrl(params[:id])
     else
       render :text => t(:media_objects_not_configured, "Media Objects not configured")
     end
@@ -75,8 +77,7 @@ class ContextController < ApplicationController
       redirect_to Kaltura::ClientV3.new.thumbnail_url(mo.try(:media_id) || media_id,
                                                       :width => width,
                                                       :height => height,
-                                                      :type => type,
-                                                      :protocol => (request.ssl? ? "https" : "http")),
+                                                      :type => type),
                   :status => 301
     else
       render :text => t(:media_objects_not_configured, "Media Objects not configured")
@@ -217,64 +218,7 @@ class ContextController < ApplicationController
     @item && @item.destroy
     render :json => @item
   end
-  
-  def chat
-    if !Tinychat.config
-      flash[:error] = t(:chat_not_enabled, "Chat has not been enabled for this Canvas site")
-      redirect_to named_context_url(@context, :context_url)
-      return
-    end
-    if authorized_action(@context, @current_user, :read_roster)
-      return unless tab_enabled?(@context.class::TAB_CHAT)
 
-      add_crumb(t('#crumbs.chat', "Chat"), named_context_url(@context, :context_chat_url))
-      self.active_tab="chat"
-
-      js_env :tinychat => {
-               :room => "inst#{Digest::MD5.hexdigest(@context.asset_string)}",
-               :nick => (@current_user.short_name.gsub(/[^\w]+/, '_').sub(/_\z/, '') rescue 'user'),
-               :key  => Tinychat.config['api_key']
-             }
-
-      res = nil
-      begin
-        session[:last_chat] ||= {}
-        if true || !session[:last_chat][@context.id] || !session[:last_chat][@context.id][:last_check_at] || session[:last_chat][@context.id][:last_check_at] < 5.minutes.ago
-          session[:last_chat][@context.id] = {}
-          session[:last_chat][@context.id][:last_check_at] = Time.now
-          require 'net/http'
-          details_url = URI.parse("http://api.tinychat.com/i-#{ Digest::MD5.hexdigest(@context.asset_string) }.json")
-          req = Net::HTTP::Get.new(details_url.path)
-          data = Net::HTTP.start(details_url.host, details_url.port) {|http|
-            http.read_timeout = 1
-            http.request(req)
-          }
-          res = data
-        end
-      rescue => e
-      rescue Timeout::Error => e
-      end
-      @room_details = session[:last_chat][@context.id][:data] rescue nil
-      if res || !@room_details
-        @room_details = ActiveSupport::JSON.decode(res.body) rescue nil
-      end
-      if @room_details
-        session[:last_chat][@context.id][:data] = @room_details
-      end
-      respond_to do |format|
-        format.html {
-          log_asset_access("chat:#{@context.asset_string}", "chat", "chat")
-          render :action => 'chat'
-        }
-        format.json { render :json => @room_details }
-      end
-    end
-  end
-
-  def chat_iframe
-    render :layout => false
-  end
-  
   def inbox
     redirect_to conversations_url, :status => :moved_permanently
   end
@@ -287,6 +231,8 @@ class ContextController < ApplicationController
     respond_to do |format|
       format.html do
         @messages = @messages.paginate(page: params[:page], per_page: 15)
+        js_env(discussion_replies_path: discussion_replies_path(:format => :json),
+               total_pages: @messages.size)
         render :action => :inbox
       end
       format.json do
@@ -295,7 +241,7 @@ class ContextController < ApplicationController
       end
     end
   end
-  
+
   def mark_inbox_as_read
     flash[:notice] = t(:all_marked_read, "Inbox messages all marked as read")
     if @current_user
@@ -354,11 +300,18 @@ class ContextController < ApplicationController
 
   def prior_users
     if authorized_action(@context, @current_user, [:manage_students, :manage_admin_users, :read_prior_roster])
-      @prior_users = @context.prior_users.
-        where(Enrollment.not_fake.proxy_options[:conditions]).
-        select("users.*, NULL AS prior_enrollment").
-        by_top_enrollment.
-        paginate(:page => params[:page], :per_page => 20)
+      if CANVAS_RAILS2
+        @prior_users = @context.prior_users.
+          where(Enrollment.not_fake.proxy_options[:conditions]).
+          select("users.*, NULL AS prior_enrollment").
+          by_top_enrollment.
+          paginate(:page => params[:page], :per_page => 20)
+      else
+        @prior_users = @context.prior_users.
+          select("users.*, NULL AS prior_enrollment").
+          by_top_enrollment.merge(Enrollment.not_fake).
+          paginate(:page => params[:page], :per_page => 20)
+      end
 
       users = @prior_users.index_by(&:id)
       if users.present?
@@ -382,7 +335,12 @@ class ContextController < ApplicationController
       @services = @services.select{|service|
         !UserService.configured_service?(service.service) || feature_and_service_enabled?(service.service.to_sym)
       }
-      @services_hash = @services.to_a.clump_per{|s| s.service }
+      @services_hash = @services.to_a.inject({}) do |hash, item|
+        mapped = item.service
+        hash[mapped] ||= []
+        hash[mapped] << item
+        hash
+      end
     end
   end
 
@@ -393,6 +351,8 @@ class ContextController < ApplicationController
       respond_to do |format|
         format.html do
           @accesses = @accesses.paginate(page: params[:page], per_page: 50)
+          js_env(context_url: context_url(@context, :context_user_usage_url, @user, :format => :json),
+                 accesses_total_pages: @accesses.total_pages)
         end
         format.json do
           @accesses = Api.paginate(@accesses, self, polymorphic_url([@context, :user_usage], user_id: @user), default_per_page: 50)
@@ -404,7 +364,7 @@ class ContextController < ApplicationController
 
   def roster_user
     if authorized_action(@context, @current_user, :read_roster)
-      user_id = Shard.relative_id_for(params[:id], @context.shard)
+      user_id = Shard.relative_id_for(params[:id], Shard.current, @context.shard)
       if @context.is_a?(Course)
         @membership = @context.enrollments.find_by_user_id(user_id)
         log_asset_access(@membership, "roster", "roster")
@@ -468,7 +428,7 @@ class ContextController < ApplicationController
       id = type.pop
       type = type.join("_")
       scope = @context
-      scope = @context.wiki if type == 'wiki_pages'
+      scope = @context.wiki if type == 'wiki_page'
       type = 'all_discussion_topic' if type == 'discussion_topic'
       @item = scope.send(type.pluralize).find(id)
       @item.restore
