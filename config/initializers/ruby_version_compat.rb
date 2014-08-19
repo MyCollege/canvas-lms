@@ -34,6 +34,13 @@ if RUBY_VERSION < '2.0'
 end
 
 if CANVAS_RAILS2
+  ActionView::Helpers::TagHelper.module_eval do
+    def escape_once(html)
+      # so '&#x27;' (in particular) doesn't get double-escaped (note the 'x?' in the regex)
+      ActiveSupport::Multibyte.clean(html.to_s).gsub(/[\"><]|&(?!([a-zA-Z]+|(#x?\d+));)/) { |special| ERB::Util::HTML_ESCAPE[special] }
+    end
+  end
+
   require "active_support/core_ext/string/output_safety"
   class ERB
     module Util
@@ -157,7 +164,7 @@ class ActiveRecord::Base
   class << self
     def strip_invalid_utf8_from_attribute(attr_name, value)
       if SERIALIZED_COLUMNS_WITH_POTENTIALLY_INVALID_UTF8[self.name].try(:include?, attr_name.to_s)
-        TextHelper.recursively_strip_invalid_utf8!(value, true)
+        Utf8Cleaner.recursively_strip_invalid_utf8!(value, true)
       end
       value
     end
@@ -180,13 +187,15 @@ class ActiveRecord::Base
   end
 end
 
-# Make sure the flash sets the encoding to UTF-8 as well.
-module ActionController
-  module Flash
-    class FlashHash
-      def [](k)
-        v = super
-        v.is_a?(String) ? v.force_encoding("UTF-8") : v
+if CANVAS_RAILS2
+  # Make sure the flash sets the encoding to UTF-8 as well.
+  module ActionController
+    module Flash
+      class FlashHash
+        def [](k)
+          v = super
+          v.is_a?(String) ? v.force_encoding("UTF-8") : v
+        end
       end
     end
   end

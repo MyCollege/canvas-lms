@@ -13,10 +13,11 @@ define [
   'compiled/views/assignments/GroupCategorySelector'
   'compiled/views/assignments/PeerReviewsSelector'
   'helpers/fakeENV'
+  'compiled/userSettings'
   'helpers/jquery.simulate'
 ], ($, _, SectionCollection, Assignment, DueDateList, Section,
   AssignmentGroupSelector, DueDateListView, DueDateOverrideView, EditView,
-  GradingTypeSelector, GroupCategorySelector, PeerReviewsSelector, fakeENV) ->
+  GradingTypeSelector, GroupCategorySelector, PeerReviewsSelector, fakeENV, userSettings) ->
 
   defaultAssignmentOpts =
     name: 'Test Assignment'
@@ -97,16 +98,12 @@ define [
     view.$('#assignment_has_group_category').click()
     equal view.getFormData()['groupCategoryId'], null
 
-  # fragile spec
-  checkWarning = (view, showsWarning) ->
-    view.$("#assignment_toggle_advanced_options").click()
-    equal view.$(".group_submission_warning").is(":visible"), false, 'warning isn\'t initially shown'
-    view.$("#assignment_has_group_category").click()
-    # equal view.$(".group_submission_warning").is(":visible"), showsWarning, 'warning has expected visibility of visible:'+showsWarning
-    view.$("#assignment_has_group_category").click()
-    equal view.$(".group_submission_warning").is(":visible"), false, 'warning is hidden after clicking again'
+  test 'renders escaped angle brackets properly', ->
+    desc = "<p>&lt;E&gt;</p>"
+    view = editView description: "<p>&lt;E&gt;</p>"
+    equal view.$description.val().match(desc), desc
 
-  module 'EditView: warning on group status change',
+  module 'EditView: group category locked',
     setup: ->
       fakeENV.setup()
       window.addGroupCategory = sinon.stub()
@@ -114,15 +111,85 @@ define [
       fakeENV.teardown()
       window.addGroupCategory = null
 
-  test 'warns when has submitted submissions', ->
+  test 'lock down group category after students submit', ->
     view = editView has_submitted_submissions: true
-    checkWarning view, true
+    ok view.$(".group_category_locked_explanation").length
+    ok view.$("#assignment_has_group_category").prop("disabled")
+    ok view.$("#assignment_group_category_id").prop("disabled")
+    ok !view.$("[type=checkbox][name=grade_group_students_individually]").prop("disabled")
 
-  test 'does not warn if starting with a group', ->
-    view = editView has_submitted_submissions: true, group_category_id: 1
-    checkWarning view, false
+    view = editView has_submitted_submissions: false
+    equal view.$(".group_category_locked_explanation").length, 0
+    ok !view.$("#assignment_has_group_category").prop("disabled")
+    ok !view.$("#assignment_group_category_id").prop("disabled")
+    ok !view.$("[type=checkbox][name=grade_group_students_individually]").prop("disabled")
 
-  test 'does not warn if there are no submitted submissions', ->
+  module 'EditView: setDefaultsIfNew',
+    setup: ->
+      fakeENV.setup()
+      sinon.stub(userSettings, 'contextGet').returns {submission_types: "foo", peer_reviews: "1", assignment_group_id: 99}
+    teardown: ->
+      userSettings.contextGet.restore()
+      fakeENV.teardown()
+
+  test 'returns values from localstorage', ->
     view = editView()
-    checkWarning view, false
+    view.setDefaultsIfNew()
 
+    equal view.assignment.get('submission_types'), "foo"
+
+  test 'returns string booleans as integers', ->
+    view = editView()
+    view.setDefaultsIfNew()
+
+    equal view.assignment.get('peer_reviews'), 1
+
+  test 'doesnt overwrite existing assignment settings', ->
+    view = editView()
+    view.assignment.set('assignment_group_id', 22)
+    view.setDefaultsIfNew()
+
+    equal view.assignment.get('assignment_group_id'), 22
+
+  test 'will overwrite empty arrays', ->
+    view = editView()
+    view.assignment.set('submission_types', [])
+    view.setDefaultsIfNew()
+
+    equal view.assignment.get('submission_types'), "foo"
+
+  module 'EditView: setDefaultsIfNew: no localStorage',
+    setup: ->
+      fakeENV.setup()
+      sinon.stub(userSettings, 'contextGet').returns null
+    teardown: ->
+      userSettings.contextGet.restore()
+      fakeENV.teardown()
+
+  test 'submission_type is online if no cache', ->
+    view = editView()
+    view.setDefaultsIfNew()
+
+    equal view.assignment.get('submission_type'), "online"
+
+  module 'EditView: cacheAssignmentSettings',
+    setup: ->
+      fakeENV.setup()
+    teardown: ->
+      fakeENV.teardown()
+
+  test 'saves valid attributes to localstorage', ->
+    view = editView()
+    sinon.stub(view, 'getFormData').returns {points_possible: 34}
+    userSettings.contextSet("new_assignment_settings", {})
+    view.cacheAssignmentSettings()
+
+    equal 34, userSettings.contextGet("new_assignment_settings")["points_possible"]
+
+  test 'rejects invalid attributes when caching', ->
+    view = editView()
+    sinon.stub(view, 'getFormData').returns {invalid_attribute_example: 30}
+    userSettings.contextSet("new_assignment_settings", {})
+    view.cacheAssignmentSettings()
+
+    equal null, userSettings.contextGet("new_assignment_settings")["invalid_attribute_example"]

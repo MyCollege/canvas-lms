@@ -26,6 +26,10 @@ class Quizzes::QuizQuestion < ActiveRecord::Base
   belongs_to :quiz, class_name: 'Quizzes::Quiz'
   belongs_to :assessment_question
   belongs_to :quiz_group, class_name: 'Quizzes::QuizGroup'
+
+  EXPORTABLE_ATTRIBUTES = [:id, :quiz_id, :quiz_group_id, :assessment_question_id, :question_data, :assessment_question_version, :position, :created_at, :updated_at, :workflow_state]
+  EXPORTABLE_ASSOCIATIONS = [:quiz, :assessment_question, :quiz_group]
+
   before_save :infer_defaults
   before_save :create_assessment_question
   before_destroy :delete_assessment_question
@@ -39,7 +43,7 @@ class Quizzes::QuizQuestion < ActiveRecord::Base
     state :deleted
   end
 
-  scope :active, where("workflow_state='active' OR workflow_state IS NULL")
+  scope :active, -> { where("workflow_state='active' OR workflow_state IS NULL") }
 
   def infer_defaults
     if !self.position && self.quiz
@@ -172,32 +176,6 @@ class Quizzes::QuizQuestion < ActiveRecord::Base
 
     set = "quiz_group_id=#{group_id}, position=CASE #{updates.join(" ")} ELSE id END"
     where(:id => questions).update_all(set)
-  end
-
-  def self.import_from_migration(hash, context, quiz=nil, quiz_group=nil)
-    unless hash[:prepped_for_import]
-      AssessmentQuestion.prep_for_import(hash, context)
-    end
-
-    question_data = self.connection.quote hash.to_yaml
-    aq_id = hash['assessment_question_id'] ? hash['assessment_question_id'] : 'NULL'
-    g_id = quiz_group ? quiz_group.id : 'NULL'
-    q_id = quiz ? quiz.id : 'NULL'
-    position = hash[:position].nil? ? 'NULL' : hash[:position].to_i
-    if id = hash['quiz_question_id']
-      query = "UPDATE quiz_questions"
-      query += " SET quiz_group_id = #{g_id}, assessment_question_id = #{aq_id}, question_data = #{question_data},"
-      query += " created_at = '#{Time.now.to_s(:db)}', updated_at = '#{Time.now.to_s(:db)}',"
-      query += " migration_id = '#{hash[:migration_id]}', position = #{position}"
-      query += " WHERE id = #{id}"
-      self.connection.execute(query)
-    else
-      query = "INSERT INTO quiz_questions (quiz_id, quiz_group_id, assessment_question_id, question_data, created_at, updated_at, migration_id, position)"
-      query += " VALUES (#{q_id}, #{g_id}, #{aq_id},#{question_data},'#{Time.now.to_s(:db)}', '#{Time.now.to_s(:db)}', '#{hash[:migration_id]}', #{position})"
-      self.connection.insert(query, "#{name} Create",
-                             primary_key, nil, sequence_name)
-    end
-    hash
   end
 
   def migrate_file_links

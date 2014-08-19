@@ -209,6 +209,43 @@ describe 'Submissions API', type: :request do
       json["grade"].should == "5"
     end
 
+    it "should not show rubric assessments to students on muted assignments" do
+      @a1.mute!
+      sub = @a1.grade_student(@student1, :grade => 5).first
+
+      rubric = rubric_model(
+        :user => @teacher,
+        :context => @course,
+        :data => larger_rubric_data
+      )
+      @a1.create_rubric_association(
+        :rubric => rubric,
+        :purpose => 'grading',
+        :use_for_grading => true,
+        :context => @course
+      )
+      ra = @a1.rubric_association.assess(
+        :assessor => @teacher,
+        :user => @student1,
+        :artifact => sub,
+        :assessment => {
+          :assessment_type => 'grading',
+          :criterion_crit1 => { :points => 3 },
+          :criterion_crit2 => { :points => 2, :comments => 'Hmm'}
+        }
+      )
+
+      @user = @student1
+      json = api_call(:get,
+            "/api/v1/sections/sis_section_id:my-section-sis-id/assignments/#{@a1.id}/submissions/#{@student1.id}",
+            { :controller => 'submissions_api', :action => 'show',
+              :format => 'json', :section_id => 'sis_section_id:my-section-sis-id',
+              :assignment_id => @a1.id.to_s, :user_id => @student1.id.to_s },
+            { :include => %w(submission_comments rubric_assessment) })
+
+      json['rubric_assessment'].should be_nil
+    end
+
     it "should not find sections in other root accounts" do
       acct = account_model(:name => 'other root')
       @first_course = @course
@@ -327,7 +364,7 @@ describe 'Submissions API', type: :request do
     json['discussion_entries'].should be_nil
   end
 
-  it "should return student discussion entries from child topics for discussion_topic group assignments" do
+  it "should return student discussion entries from child topics for group discussion_topic assignments" do
     @student = user(:active_all => true)
     course_with_teacher(:active_all => true)
     @course.enroll_student(@student).accept!
@@ -335,7 +372,7 @@ describe 'Submissions API', type: :request do
     @group = @course.groups.create(:name => "Group", :group_category => group_category)
     @group.add_user(@student)
     @context = @course
-    @assignment = factory_with_protected_attributes(@course.assignments, {:title => 'assignment1', :submission_types => 'discussion_topic', :discussion_topic => discussion_topic_model, :group_category => @group.group_category})
+    @assignment = factory_with_protected_attributes(@course.assignments, {:title => 'assignment1', :submission_types => 'discussion_topic', :discussion_topic => discussion_topic_model(:group_category => @group.group_category)})
     @topic.refresh_subtopics # since the DJ won't happen in time
     @child_topic = @group.discussion_topics.find_by_root_topic_id(@topic.id)
 
@@ -582,8 +619,8 @@ describe 'Submissions API', type: :request do
     @course.enroll_student(student1).accept!
     a1 = @course.assignments.create!(:title => 'assignment1', :grading_type => 'letter_grade', :points_possible => 15)
     media_object(:media_id => "54321", :context => student1, :user => student1)
-    mock_kaltura = mock('Kaltura::ClientV3')
-    Kaltura::ClientV3.stubs(:new).returns(mock_kaltura)
+    mock_kaltura = mock('CanvasKaltura::ClientV3')
+    CanvasKaltura::ClientV3.stubs(:new).returns(mock_kaltura)
     mock_kaltura.expects(:media_sources).returns([{:height => "240", :bitrate => "382", :isOriginal => "0", :width => "336", :content_type => "video/mp4",
                                                    :containerFormat => "isom", :url => "https://kaltura.example.com/some/url", :size =>"204", :fileExt=>"mp4"}])
 
@@ -866,8 +903,10 @@ describe 'Submissions API', type: :request do
 
     course_with_teacher(:active_all => true)
 
-    @course.enroll_student(student1).accept!
-    @course.enroll_student(student2).accept!
+    enrollment1 = @course.enroll_student(student1)
+    enrollment1.accept!
+    enrollment2 = @course.enroll_student(student2)
+    enrollment2.accept!
 
     json = api_call(:get,
           "/api/v1/courses/#{@course.id}/students/submissions.json",
@@ -877,10 +916,13 @@ describe 'Submissions API', type: :request do
     json.sort_by { |h| h['user_id'] }.should == [
       {
         'user_id' => student1.id,
+        "section_id" => enrollment1.course_section_id,
         'submissions' => [],
       },
       {
         'user_id' => student2.id,
+        "section_id" => enrollment2.course_section_id,
+        'integration_id' => nil,
         'submissions' => [],
       },
     ]
@@ -890,6 +932,25 @@ describe 'Submissions API', type: :request do
           { :controller => 'submissions_api', :action => 'for_students',
             :format => 'json', :course_id => @course.to_param },
           { :student_ids => [student1.to_param, student2.to_param] })
+    json.should == []
+  end
+
+  it "should return integration_id for user and assignment" do
+    student1 = user(:active_all => true)
+    student2 = user_with_pseudonym(:active_all => true)
+    student2.pseudonym.update_attribute(:sis_user_id, 'my-student-id')
+    student2.pseudonym.update_attribute(:integration_id, 'xyz')
+
+    course_with_teacher(:active_all => true)
+
+    @course.enroll_student(student1).accept!
+    @course.enroll_student(student2).accept!
+    
+    json = api_call(:get,
+          "/api/v1/courses/#{@course.id}/students/submissions.json",
+          { :controller => 'submissions_api', :action => 'for_students',
+            :format => 'json', :course_id => @course.to_param },
+          { :student_ids => 'all' })
     json.should == []
   end
 

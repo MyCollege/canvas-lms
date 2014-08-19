@@ -13,15 +13,13 @@ else
   routes = CanvasRails::Application.routes
 end
 
+full_path_glob = CANVAS_RAILS2 ? '/*full_path' : '(/*full_path)'
+
 routes.draw do
   resources :submission_comments, :only => :destroy
 
-  match 'inbox' => 'context#mark_inbox_as_read', :as => :mark_inbox_as_read, :via => :delete
   match 'inbox' => 'context#inbox', :as => :inbox
-  match 'inbox/:id' => 'context#destroy_inbox_item', :as => :destroy_inbox_item, :via => :delete
-  match 'inbox/:id' => 'context#inbox_item', :as => :inbox_item
 
-  match 'conversations/discussion_replies' => 'context#discussion_replies', :as => :discussion_replies
   match 'conversations/unread' => 'conversations#index', :as => :conversations_unread, :redirect_scope => 'unread'
   match 'conversations/starred' => 'conversations#index', :as => :conversations_starred, :redirect_scope => 'starred'
   match 'conversations/sent' => 'conversations#index', :as => :conversations_sent, :redirect_scope => 'sent'
@@ -81,11 +79,13 @@ routes.draw do
       match 'inline_view' => 'files#show', :as => :inline_view, :inline => '1'
       match 'scribd_render' => 'files#scribd_render', :as => :scribd_render
       match 'contents' => 'files#attachment_content', :as => :attachment_content
-      match ':file_path' => 'files#show_relative', :as => :relative_path, :file_path => /.+/
       collection do
+        get "folder#{full_path_glob}", :controller => :files, :action => :ember_app, :format => false
+        get "search", :controller => :files, :action => :ember_app, :format => false
         get :quota
         post :reorder
       end
+      match ':file_path' => 'files#show_relative', :as => :relative_path, :file_path => /.+/ #needs to stay below ember_app route
     end
   end
 
@@ -232,8 +232,7 @@ routes.draw do
       end
     end
 
-    resource :gradebook2, :controller => :gradebook2
-    match 'screenreader_gradebook' => 'gradebook2#screenreader'
+    match 'gradebook2' => "gradebooks#gradebook2"
 
     match 'attendance' => 'gradebooks#attendance', :as => :attendance
     match 'attendance/:user_id' => 'gradebooks#attendance', :as => :attendance_user
@@ -291,6 +290,7 @@ routes.draw do
       match 'homework_submission' => 'external_tools#homework_submission', :as => :homework_submission
       match 'finished' => 'external_tools#finished', :as => :finished
       collection do
+        get :tool_proxy_registration, controller: 'lti/tool_proxy', action: 'register', :as => :tool_proxy_registration
         get :retrieve
         get :homework_submissions
       end
@@ -314,10 +314,7 @@ routes.draw do
       match 'history' => 'quizzes/quizzes#history', :as => :history
       match 'statistics' => 'quizzes/quizzes#statistics', :as => :statistics
       match 'read_only' => 'quizzes/quizzes#read_only', :as => :read_only
-
-      collection do
-        get :fabulous_quizzes
-      end
+      match 'submission_html' => 'quizzes/quizzes#submission_html', :as => :submission_html
 
       resources :quiz_submissions, :controller => 'quizzes/quiz_submissions', :path => :submissions do
         collection do
@@ -394,7 +391,6 @@ routes.draw do
     match 'copy' => 'courses#copy_course', :as => :copy_course, :via => :post
     concerns :media
     match 'user_notes' => 'user_notes#user_notes', :as => :user_notes
-    match 'switch_role/:role' => 'courses#switch_role', :as => :switch_role
     match 'details/sis_publish' => 'courses#sis_publish_status', :as => :sis_publish_status, :via => :get
     match 'details/sis_publish' => 'courses#publish_to_sis', :as => :publish_to_sis, :via => :post
     resources :user_lists, :only => :create
@@ -408,8 +404,8 @@ routes.draw do
 
   match 'quiz_statistics/:quiz_statistics_id/files/:file_id/download' => 'files#show', :as => :quiz_statistics_download, :download => '1'
 
-  match '/submissions/:submission_id/attachments/:attachment_id/crocodoc_sessions' => 'crocodoc_sessions#create', :via => :post
-  match '/attachments/:attachment_id/crocodoc_sessions' => 'crocodoc_sessions#create', :via => :post
+  match '/crocodoc_session' => 'crocodoc_sessions#show', :via => :get, :as => :crocodoc_session
+  match '/canvadoc_session' => 'canvadoc_sessions#show', :via => :get, :as => :canvadoc_session
 
   resources :page_views, :only => [:update]
   match 'media_objects' => 'context#create_media_object', :as => :create_media_object, :via => :post
@@ -557,6 +553,9 @@ routes.draw do
     resources :external_tools do
       match 'finished' => 'external_tools#finished', :as => :finished
       match 'resource_selection' => 'external_tools#resource_selection', :as => :resource_selection
+      collection do
+        get  :tool_proxy_registration, controller: 'lti/tool_proxy', action: 'register', :as => :tool_proxy_registration
+      end
     end
 
     match 'outcomes/users/:user_id' => 'outcomes#user_outcome_results', :as => :user_outcomes_results
@@ -613,7 +612,8 @@ routes.draw do
   match 'grades' => 'users#grades', :as => :grades
   match 'login' => 'pseudonym_sessions#new', :as => :login, :via => :get
   match 'login' => 'pseudonym_sessions#create', :via => :post
-  match 'logout' => 'pseudonym_sessions#destroy', :as => :logout
+  match 'logout' => 'pseudonym_sessions#destroy', :as => :logout, :via => :delete
+  match 'logout' => 'pseudonym_sessions#saml_logout', :via => [:get, :post]
   match 'login/cas' => 'pseudonym_sessions#new', :as => :cas_login, :via => :get
   match 'login/cas' => 'pseudonym_sessions#cas_logout', :as => :cas_logout, :via => :post
   match 'login/otp' => 'pseudonym_sessions#otp_login', :as => :otp_login, :via => [:get, :post]
@@ -674,10 +674,12 @@ routes.draw do
       get :communication
       put :communication_update
       get :settings
+      get :observees
     end
   end
 
   scope '/profile' do
+    match 'toggle_disable_inbox' => 'profile#toggle_disable_inbox', :as => :toggle_disable_inbox, :via => :post
     match 'profile_pictures' => 'profile#profile_pics', :as => :profile_pics
     match 'user_services/:id' => 'users#delete_user_service', :as => :profile_user_service, :via => :delete
     match 'user_services' => 'users#create_user_service', :as => :profile_create_user_service, :via => :post
@@ -732,7 +734,9 @@ routes.draw do
   match 'calendar2' => 'calendars#show2', :as => :calendar2, :via => :get
   match 'course_sections/:course_section_id/calendar_events/:id' => 'calendar_events#show', :as => :course_section_calendar_event, :via => :get
   match 'switch_calendar/:preferred_calendar' => 'calendars#switch_calendar', :as => :switch_calendar, :via => :post
-  match 'files' => 'files#full_index', :as => :files, :via => :get
+  match 'files' => 'files#index', :as => :files, :via => :get
+  get "files/folder#{full_path_glob}", :controller => :files, :action => :ember_app, :format => false
+  get "files/search", :controller => :files, :action => :ember_app, :format => false
   match 'files/s3_success/:id' => 'files#s3_success', :as => :s3_success
   match 'files/:id/public_url' => 'files#public_url', :as => :public_url
   match 'files/preflight' => 'files#preflight', :as => :file_preflight
@@ -767,7 +771,7 @@ routes.draw do
 
   match 'object_snippet' => 'context#object_snippet', :as => :object_snippet, :via => :post
   match 'saml_consume' => 'pseudonym_sessions#saml_consume', :as => :saml_consume
-  match 'saml_logout' => 'pseudonym_sessions#saml_logout', :as => :saml_logout
+  match 'saml_logout' => 'pseudonym_sessions#saml_logout', :as => :saml_logout, :via => [:get, :post, :delete]
   match 'saml_meta_data' => 'accounts#saml_meta_data', :as => :saml_meta_data
 
   # Routes for course exports
@@ -801,13 +805,9 @@ routes.draw do
     concerns :files
   end
 
-  # commenting out all collection urls until collections are live
-  # resources :collection_items, :only => [:new]
-  # match 'get_bookmarklet', => 'collection_items#get_bookmarklet', :as => :get_bookmarklet
-  match 'collection_items/link_data' => 'collection_items#link_data', :as => :collection_item_link_data, :via => :post
-  # resources :collections, :only => [:show, :index] do
-  #   resources :collection_items, :only => [:show, :index]
-  # end
+  scope(:controller => :outcome_results) do
+    get 'courses/:course_id/outcome_rollups', :action => :rollups, :path_name => 'course_outcome_rollups'
+  end
 
   ### API routes ###
 
@@ -839,8 +839,17 @@ routes.draw do
       get  'courses/:course_id/files', :controller => :files, :action => :api_index, :path_name => 'course_files'
       post 'courses/:course_id/files', :action => :create_file, :path_name => 'course_create_file'
       post 'courses/:course_id/folders', :controller => :folders, :action => :create
+      get 'courses/:course_id/folders/by_path/*full_path', :controller => :folders, :action => :resolve_path
+      get 'courses/:course_id/folders/by_path', :controller => :folders, :action => :resolve_path
       get  'courses/:course_id/folders/:id', :controller => :folders, :action => :show, :path_name => 'course_folder'
       put  'accounts/:account_id/courses', :action => :batch_update
+      post 'courses/:course_id/ping', :action => :ping, :path_name => 'course_ping'
+
+      get "courses/:course_id/content_list", :controller => :content_exports_api, :action => :content_list, :path_name => "course_content_list"
+    end
+
+    scope(:controller => :account_notifications) do
+      post 'accounts/:account_id/account_notifications', :action => :create, :path_name => 'account_notification'
     end
 
     scope(:controller => :tabs) do
@@ -864,6 +873,7 @@ routes.draw do
       get  'courses/:course_id/enrollments', :action => :index, :path_name => 'course_enrollments'
       get  'sections/:section_id/enrollments', :action => :index, :path_name => 'section_enrollments'
       get  'users/:user_id/enrollments', :action => :index, :path_name => 'user_enrollments'
+      get  'accounts/:account_id/enrollments/:id', :action => :show, :path_name => 'enrollment'
 
       post 'courses/:course_id/enrollments', :action => :create
       post 'sections/:section_id/enrollments', :action => :create
@@ -944,19 +954,23 @@ routes.draw do
     end
 
     scope(:controller => :content_migrations) do
-      get 'courses/:course_id/content_migrations/migrators', :action => :available_migrators, :path_name => 'course_content_migration_migrators_list'
-      get 'courses/:course_id/content_migrations/:id', :action => :show, :path_name => 'course_content_migration'
-      get 'courses/:course_id/content_migrations', :action => :index, :path_name => 'course_content_migration_list'
-      post 'courses/:course_id/content_migrations', :action => :create, :path_name => 'course_content_migration_create'
-      put 'courses/:course_id/content_migrations/:id', :action => :update, :path_name => 'course_content_migration_update'
-      get 'courses/:course_id/content_migrations/:id/selective_data', :action => :content_list, :path_name => 'course_content_migration_selective_data'
+      %w(account course group user).each do |context|
+        get "#{context.pluralize}/:#{context}_id/content_migrations/migrators", :action => :available_migrators, :path_name => "#{context}_content_migration_migrators_list"
+        get "#{context.pluralize}/:#{context}_id/content_migrations/:id", :action => :show, :path_name => "#{context}_content_migration"
+        get "#{context.pluralize}/:#{context}_id/content_migrations", :action => :index, :path_name => "#{context}_content_migration_list"
+        post "#{context.pluralize}/:#{context}_id/content_migrations", :action => :create, :path_name => "#{context}_content_migration_create"
+        put "#{context.pluralize}/:#{context}_id/content_migrations/:id", :action => :update, :path_name => "#{context}_content_migration_update"
+        get "#{context.pluralize}/:#{context}_id/content_migrations/:id/selective_data", :action => :content_list, :path_name => "#{context}_content_migration_selective_data"
+      end
     end
 
     scope(:controller => :migration_issues) do
-      get 'courses/:course_id/content_migrations/:content_migration_id/migration_issues/:id', :action => :show, :path_name => 'course_content_migration_migration_issue'
-      get 'courses/:course_id/content_migrations/:content_migration_id/migration_issues', :action => :index, :path_name => 'course_content_migration_migration_issue_list'
-      post 'courses/:course_id/content_migrations/:content_migration_id/migration_issues', :action => :create, :path_name => 'course_content_migration_migration_issue_create'
-      put 'courses/:course_id/content_migrations/:content_migration_id/migration_issues/:id', :action => :update, :path_name => 'course_content_migration_migration_issue_update'
+      %w(account course group user).each do |context|
+        get "#{context.pluralize}/:#{context}_id/content_migrations/:content_migration_id/migration_issues/:id", :action => :show, :path_name => "#{context}_content_migration_migration_issue"
+        get "#{context.pluralize}/:#{context}_id/content_migrations/:content_migration_id/migration_issues", :action => :index, :path_name => "#{context}_content_migration_migration_issue_list"
+        post "#{context.pluralize}/:#{context}_id/content_migrations/:content_migration_id/migration_issues", :action => :create, :path_name => "#{context}_content_migration_migration_issue_create"
+        put "#{context.pluralize}/:#{context}_id/content_migrations/:content_migration_id/migration_issues/:id", :action => :update, :path_name => "#{context}_content_migration_migration_issue_update"
+      end
     end
 
     scope(:controller => :discussion_topics_api) do
@@ -964,6 +978,7 @@ routes.draw do
         get "#{context.pluralize}/:#{context}_id/discussion_topics/:topic_id", :action => :show, :path_name => "#{context}_discussion_topic"
         post "#{context.pluralize}/:#{context}_id/discussion_topics", :controller => :discussion_topics, :action => :create
         put "#{context.pluralize}/:#{context}_id/discussion_topics/:topic_id", :controller => :discussion_topics, :action => :update
+        post "#{context.pluralize}/:#{context}_id/discussion_topics/reorder", :controller => :discussion_topics, :action => :reorder
         delete "#{context.pluralize}/:#{context}_id/discussion_topics/:topic_id", :controller => :discussion_topics, :action => :destroy
 
         get "#{context.pluralize}/:#{context}_id/discussion_topics/:topic_id/view", :action => :view, :path_name => "#{context}_discussion_topic_view"
@@ -987,7 +1002,6 @@ routes.draw do
       end
       topic_routes("course")
       topic_routes("group")
-      topic_routes("collection_item")
     end
 
     scope(:controller => :collaborations) do
@@ -1044,7 +1058,10 @@ routes.draw do
       put 'users/:id', :action => :update
       post 'users/:user_id/files', :action => :create_file
 
+      get  'users/:user_id/files', :controller => :files, :action => :api_index, :path_name => 'user_files'
       post 'users/:user_id/folders', :controller => :folders, :action => :create
+      get 'users/:user_id/folders/by_path/*full_path', :controller => :folders, :action => :resolve_path
+      get 'users/:user_id/folders/by_path', :controller => :folders, :action => :resolve_path
       get 'users/:user_id/folders/:id', :controller => :folders, :action => :show, :path_name => 'user_folder'
 
       get 'users/:id/settings', controller: 'users', action: 'settings'
@@ -1052,6 +1069,21 @@ routes.draw do
 
       put 'users/:id/merge_into/:destination_user_id', controller: 'users', action: 'merge_into'
       put 'users/:id/merge_into/accounts/:destination_account_id/users/:destination_user_id', controller: 'users', action: 'merge_into'
+
+      scope(:controller => :user_observees) do
+        get    'users/:user_id/observees', action: :index, path_name: 'user_observees'
+        post   'users/:user_id/observees', action: :create
+        get    'users/:user_id/observees/:observee_id', action: :show, path_name: 'user_observee'
+        put    'users/:user_id/observees/:observee_id', action: :update
+        delete 'users/:user_id/observees/:observee_id', action: :destroy
+      end
+    end
+
+    scope(:controller => :custom_data) do
+      glob = CANVAS_RAILS2 ? '/*scope' : '(/*scope)'
+      get "users/:user_id/custom_data#{glob}", action: 'get_data'
+      put "users/:user_id/custom_data#{glob}", action: 'set_data'
+      delete "users/:user_id/custom_data#{glob}", action: 'delete_data'
     end
 
     scope(:controller => :pseudonyms) do
@@ -1201,25 +1233,11 @@ routes.draw do
         resources :users, :path_prefix => "groups/:group_id", :name_prefix => "group_", :controller => :group_memberships, :except => [:show, :create]
       end
 
+      get  'groups/:group_id/files', :controller => :files, :action => :api_index, :path_name => 'group_files'
       post 'groups/:group_id/folders', :controller => :folders, :action => :create
+      get 'groups/:group_id/folders/by_path/*full_path', :controller => :folders, :action => :resolve_path
+      get 'groups/:group_id/folders/by_path', :controller => :folders, :action => :resolve_path
       get 'groups/:group_id/folders/:id', :controller => :folders, :action => :show, :path_name => 'group_folder'
-    end
-
-    scope(:controller => :collections) do
-      get "collections", :action => :list, :path_name => 'collections'
-      resources :collections, :path_prefix => "users/:user_id", :name_prefix => "user_", :only => [:index, :create]
-      resources :collections, :path_prefix => "groups/:group_id", :name_prefix => "group_", :only => [:index, :create]
-      resources :collections, :except => [:index, :create]
-      put "collections/:collection_id/followers/self", :action => :follow
-      delete "collections/:collection_id/followers/self", :action => :unfollow
-
-      scope(:controller => :collection_items) do
-        get "collections/:collection_id/items", :action => :index, :path_name => 'collection_items_list'
-        resources :items, :path_prefix => "collections/:collection_id", :name_prefix => "collection_", :controller => :collection_items, :only => [:index, :create]
-        resources :items, :path_prefix => "collections", :name_prefix => "collection_", :controller => :collection_items, :except => [:index, :create]
-        put "collections/items/:item_id/upvotes/self", :action => :upvote
-        delete "collections/items/:item_id/upvotes/self", :action => :remove_upvote
-      end
     end
 
     scope(:controller => :developer_keys) do
@@ -1246,6 +1264,7 @@ routes.draw do
       delete 'files/:id', :action => :destroy
       put 'files/:id', :action => :api_update
       get 'files/:id/:uuid/status', :action => :api_file_status, :path_name => 'file_status'
+      get 'files/:id/public_url', :action => :public_url
       %w(course group user).each do |context|
         get "#{context}s/:#{context}_id/files/quota", :action => :api_quota
       end
@@ -1322,6 +1341,11 @@ routes.draw do
       post "courses/:course_id/quizzes/:id/reorder", :action => :reorder, :path_name => 'course_quiz_reorder'
     end
 
+    scope(:controller => 'quizzes/quiz_submission_users') do
+      get "courses/:course_id/quizzes/:id/submission_users", :action => :index, :path_name => 'course_quiz_submission_users'
+      post "courses/:course_id/quizzes/:id/submission_users/message", :action => :message, :path_name => 'course_quiz_submission_users_message'
+    end
+
     scope(:controller => 'quizzes/quiz_groups') do
       post "courses/:course_id/quizzes/:quiz_id/groups", :action => :create, :path_name => 'course_quiz_group_create'
       put "courses/:course_id/quizzes/:quiz_id/groups/:id", :action => :update, :path_name => 'course_quiz_group_update'
@@ -1339,6 +1363,7 @@ routes.draw do
 
     scope(:controller => 'quizzes/quiz_reports') do
       post "courses/:course_id/quizzes/:quiz_id/reports", :action => :create, :path_name => 'course_quiz_reports_create'
+      get "courses/:course_id/quizzes/:quiz_id/reports", :action => :index, :path_name => 'course_quiz_reports'
       get "courses/:course_id/quizzes/:quiz_id/reports/:id", :action => :show, :path_name => 'course_quiz_report'
     end
 
@@ -1354,16 +1379,74 @@ routes.draw do
       post 'courses/:course_id/quizzes/:quiz_id/submissions/:id/complete', :action => :complete, :path_name => 'course_quiz_submission_complete'
     end
 
-    scope(:controller => :quiz_submission_questions) do
+    scope(:controller => 'quizzes/quiz_extensions') do
+      post 'courses/:course_id/quizzes/:quiz_id/extensions', :action => :create, :path_name => 'course_quiz_extensions_create'
+    end
+
+    scope(:controller => 'quizzes/quiz_submission_questions') do
       get '/quiz_submissions/:quiz_submission_id/questions', :action => :index, :path_name => 'quiz_submission_questions'
+      post '/quiz_submissions/:quiz_submission_id/questions', :action => :answer, :path_name => 'quiz_submission_question_answer'
       get '/quiz_submissions/:quiz_submission_id/questions/:id', :action => :show, :path_name => 'quiz_submission_question'
-      put '/quiz_submissions/:quiz_submission_id/questions/:id', :action => :answer, :path_name => 'quiz_submission_question_answer'
       put '/quiz_submissions/:quiz_submission_id/questions/:id/flag', :action => :flag, :path_name => 'quiz_submission_question_flag'
       put '/quiz_submissions/:quiz_submission_id/questions/:id/unflag', :action => :unflag, :path_name => 'quiz_submission_question_unflag'
     end
 
     scope(:controller => 'quizzes/quiz_ip_filters') do
       get 'courses/:course_id/quizzes/:quiz_id/ip_filters', :action => :index, :path_name => 'course_quiz_ip_filters'
+    end
+
+    scope(:controller => 'quizzes/quiz_statistics') do
+      get 'courses/:course_id/quizzes/:quiz_id/statistics', :action => :index, :path_name => 'course_quiz_statistics'
+    end
+
+    scope(:controller => 'polling/polls') do
+      get "polls", :action => :index, :path_name => 'polls'
+      post "polls", :action => :create, :path_name => 'poll_create'
+      get "polls/:id", :action => :show, :path_name => 'poll'
+      put "polls/:id", :action => :update, :path_name => 'poll_update'
+      delete "polls/:id", :action => :destroy, :path_name => 'poll_destroy'
+    end
+
+    scope(:controller => 'polling/poll_choices') do
+      get "polls/:poll_id/poll_choices", :action => :index, :path_name => 'poll_choices'
+      post "polls/:poll_id/poll_choices", :action => :create, :path_name => 'poll_choices_create'
+      get "polls/:poll_id/poll_choices/:id", :action => :show, :path_name => 'poll_choice'
+      put "polls/:poll_id/poll_choices/:id", :action => :update, :path_name => 'poll_choice_update'
+      delete "polls/:poll_id/poll_choices/:id", :action => :destroy, :path_name => 'poll_choice_destroy'
+    end
+
+    scope(:controller => 'polling/poll_sessions') do
+      get "polls/:poll_id/poll_sessions", :action => :index, :path_name => 'poll_sessions'
+      post "polls/:poll_id/poll_sessions", :action => :create, :path_name => 'poll_sessions_create'
+      get "polls/:poll_id/poll_sessions/:id", :action => :show, :path_name => 'poll_session'
+      put "polls/:poll_id/poll_sessions/:id", :action => :update, :path_name => 'poll_session_update'
+      delete "polls/:poll_id/poll_sessions/:id", :action => :destroy, :path_name => 'poll_session_destroy'
+      get "polls/:poll_id/poll_sessions/:id/open", :action => :open, :path_name => 'poll_session_publish'
+      get "polls/:poll_id/poll_sessions/:id/close", :action => :close, :path_name => 'poll_session_close'
+
+      get "poll_sessions/opened", :action => :opened, :path_name => 'poll_sessions_opened'
+      get "poll_sessions/closed", :action => :closed, :path_name => 'poll_sessions_closed'
+    end
+
+    scope(:controller => 'polling/poll_submissions') do
+      post "polls/:poll_id/poll_sessions/:poll_session_id/poll_submissions", :action => :create, :path_name => 'poll_submissions_create'
+      get "polls/:poll_id/poll_sessions/:poll_session_id/poll_submissions/:id", :action => :show, :path_name => 'poll_submission'
+    end
+
+    scope(:controller => 'live_assessments/assessments') do
+      %w(course).each do |context|
+        prefix = "#{context}s/:#{context}_id"
+        get "#{prefix}/live_assessments", :action => :index, :path_name => "#{context}_live_assessments"
+        post "#{prefix}/live_assessments", :action => :create, :path_name => "#{context}_live_assessment_create"
+      end
+    end
+
+    scope(:controller => 'live_assessments/results') do
+      %w(course).each do |context|
+        prefix = "#{context}s/:#{context}_id"
+        get "#{prefix}/live_assessments/:assessment_id/results", :action => :index, :path_name => "#{context}_live_assessment_results"
+        post "#{prefix}/live_assessments/:assessment_id/results", :action => :create, :path_name => "#{context}_live_assessment_result_create"
+      end
     end
 
     scope(:controller => :outcome_groups_api) do
@@ -1472,12 +1555,9 @@ routes.draw do
       get "#{prefix}/:id", :action => :show
     end
 
-    scope(:controller => :data_exports_api, :module => :data_exports_api) do
-      prefix = "accounts/:account_id/data_exports"
-      get prefix, :action => :index, :path_name => "data_exports"
-      post prefix, :action => :create
-      get '#{prefix}/:id', :action => :show, :path_name => "data_export"
-      delete '#{prefix}/:id', :action => :cancel
+    scope(:controller => :grading_standards_api) do
+      post 'accounts/:account_id/grading_standards', :action => :create
+      post 'courses/:course_id/grading_standards', :action => :create
     end
   end
 
@@ -1497,6 +1577,15 @@ routes.draw do
   ApiRouteSet.draw(self, "/api/lti/v1") do
     post "tools/:tool_id/grade_passback", :controller => :lti_api, :action => :grade_passback, :path_name => "lti_grade_passback_api"
     post "tools/:tool_id/ext_grade_passback", :controller => :lti_api, :action => :legacy_grade_passback, :path_name => "blti_legacy_grade_passback_api"
+  end
+
+  ApiRouteSet.draw(self, "/api/lti") do
+    ['course', 'account'].each do |context|
+      prefix = "#{context}s/:#{context}_id"
+      get  "#{prefix}/tool_consumer_profile/:tool_consumer_profile_id", controller: 'lti/tool_consumer_profile', action: 'show', :as => "#{context}_tool_consumer_profile"
+      post "#{prefix}/tool_proxy", :controller => 'lti/tool_proxy', :action => :create, :path_name => "create_#{context}_lti_tool_proxy"
+    end
+    get  "tool_proxy/:tool_proxy_guid", :controller => 'lti/tool_proxy', :action => :show, :path_name => "show_lti_tool_proxy"
   end
 
   match '/assets/:package.:extension' => 'jammit#package', :as => :jammit if defined?(Jammit)

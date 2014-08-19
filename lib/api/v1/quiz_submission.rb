@@ -32,6 +32,7 @@ module Api::V1::QuizSubmission
     attempt
     extra_attempts
     extra_time
+    manually_unlocked
     started_at
     finished_at
     end_at
@@ -39,12 +40,15 @@ module Api::V1::QuizSubmission
     kept_score
     score
     score_before_regrade
+    has_seen_results
     validation_token
     workflow_state
   ].freeze
 
   QUIZ_SUBMISSION_JSON_FIELD_METHODS = %w[
     time_spent
+    attempts_left
+    questions_regraded_since_last_attempt
   ].freeze
 
   def quiz_submission_json(qs, quiz, user, session, context = nil)

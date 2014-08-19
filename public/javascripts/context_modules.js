@@ -239,11 +239,13 @@ define([
         });
       },
       itemClass: function(content_tag) {
-        return content_tag.content_type + "_" + content_tag.content_id;
+        return (content_tag.content_type || "").replace(/^[A-Za-z]+::/, '') + "_" + content_tag.content_id;
       },
       updateAllItemInstances: function(content_tag) {
         $(".context_module_item."+modules.itemClass(content_tag)+" .title").each(function() {
-          $(this).text(content_tag.title);
+          $this = $(this);
+          $this.text(content_tag.title);
+          $this.attr('title', content_tag.title);
         });
       },
       editModule: function($module) {
@@ -264,7 +266,7 @@ define([
           $form.attr('method', 'PUT');
           $form.find(".submit_button").text(I18n.t('buttons.update', "Update Module"));
         }
-        $form.find("#unlock_module_at").prop('checked', data.unlock_at);
+        $form.find("#unlock_module_at").prop('checked', data.unlock_at).change()
         $form.find("#require_sequential_progress").attr('checked', data.require_sequential_progress == "true" || data.require_sequential_progress == "1");
         $form.find("#publish_final_grade").attr('checked', data.publish_final_grade == "true" || data.publish_final_grade == "1");
         $form.find(".prerequisites_entry").showIf($("#context_modules .context_module").length > 1);
@@ -326,6 +328,7 @@ define([
         data.type = data.type || data['item[type]'] || $.underscore(data.content_type);
         data.title = data.title || data['item[title]'];
         data.new_tab = data.new_tab ? '1' : '0';
+        data.graded = data.graded ? '1' : '0';
         var $item, $olditem = (data.id != 'new') ? $("#context_module_item_" + data.id) : [];
         if($olditem.length) {
           var admin = $olditem.find('.ig-admin');
@@ -340,6 +343,7 @@ define([
         $item.addClass(data.type + "_" + data.id);
         $item.addClass(data.type);
         $item.attr('aria-label', data.title);
+        $item.find('.title').attr('title', data.title);
         $item.fillTemplateData({
           data: data,
           id: 'context_module_item_' + data.id,
@@ -374,7 +378,9 @@ define([
       refreshModuleList: function() {
         $("#module_list").find(".context_module_option").remove();
         $("#context_modules .context_module").each(function() {
-          var data = $(this).find(".header").getTemplateData({textValues: ['name', 'id']});
+          $this = $(this);
+          var data = $this.find(".header").getTemplateData({textValues: ['name', 'id']});
+          $this.find('.name').attr('title', data.name);
           var $option = $(document.createElement('option'));
           $option.val(data.id);
 
@@ -483,13 +489,20 @@ define([
       modules: modules
     });
 
+    var $context_module_unlocked_at = $("#context_module_unlock_at");
+    var valCache = '';
     $("#unlock_module_at").change(function() {
       $this = $(this);
-      $unlock_module_at_details = $(".unlock_module_at_details");
-      $unlock_module_at_details.showIf($this.attr('checked'))
+      var $unlock_module_at_details = $(".unlock_module_at_details");
+      $unlock_module_at_details.showIf($this.attr('checked'));
 
-      if (!$this.attr('checked')) {
-        $("#context_module_unlock_at").val('').triggerHandler('change');
+      if ($this.attr('checked')) {
+        if(!$context_module_unlocked_at.val()){
+          $context_module_unlocked_at.val(valCache);
+        }
+      }else{
+        valCache = $context_module_unlocked_at.val();
+        $context_module_unlocked_at.val('').triggerHandler('change');
       }
     }).triggerHandler('change');
 
@@ -527,10 +540,13 @@ define([
         .removeClass('must_contribute_requirement')
         .find('.criterion').removeClass('defined');
 
+      // Hack. Removing the class here only to re-add it a few lines later if needed.
+      $module.find('.ig-row').removeClass('with-completion-requirements');
       for(var idx in data.context_module.completion_requirements) {
         var req = data.context_module.completion_requirements[idx];
         req.criterion_type = req.type;
         var $item = $module.find("#context_module_item_" + req.id);
+        $item.find('.ig-row').addClass('with-completion-requirements');
         $item.find(".criterion").fillTemplateData({data: req});
         $item.find(".completion_requirement").fillTemplateData({data: req});
         $item.find(".criterion").addClass('defined');
@@ -576,6 +592,7 @@ define([
         $module.attr('id', 'context_module_' + data.context_module.id);
 
         // Set this module up with correct data attributes
+        $module.data('moduleId', data.context_module.id);
         $module.data('module-url', "/courses/" + data.context_module.context_id + "/modules/" + data.context_module.id);
         $module.data('workflow-state', data.context_module.workflow_state);
         if(data.context_module.workflow_state == "unpublished"){
@@ -589,10 +606,14 @@ define([
         var $publishIcon = $module.find('.publish-icon');
         // new module, setup publish icon and other stuff
         if (ENV.ENABLE_DRAFT && !$publishIcon.data('id')) {
-          var collapse = $module.find('h2.collapse_module_link');
-          var expand = $module.find('h2.collapse_module_link');
-          var href = collapse.attr('href');
-          $(collapse, expand).attr('href', href.replace('{{ id }}', data.context_module.id));
+          var fixLink = function(locator, attribute) {
+              el = $module.find(locator);
+              el.attr(attribute, el.attr(attribute).replace('{{ id }}', data.context_module.id));
+          }
+          fixLink('h2.collapse_module_link', 'href');
+          fixLink('h2.expand_module_link', 'href');
+          fixLink('.reorder_items_url', 'href');
+          fixLink('.add_module_item_link', 'rel');
           var publishData = {
             moduleType: 'module',
             id: data.context_module.id,
@@ -682,10 +703,13 @@ define([
     });
     $("#completion_criterion_option .id").change(function() {
       var $option = $(this).parents(".completion_criterion_option");
-      var data = $("#context_module_item_" + $(this).val()).getTemplateData({textValues: ['type']});
+      var data = $("#context_module_item_" + $(this).val()).getTemplateData({textValues: ['type', 'graded']});
       $option.find(".type option").hide().attr('disabled', true).end()
         .find(".type option.any").show().attr('disabled', false).end()
         .find(".type option." + data.type).show().attr('disabled', false);
+      if (data.graded == '1') {
+        $option.find(".type option.graded").show().attr('disabled', false);
+      }
       $option.find(".type").val($option.find(".type option." + data.criterion_type + ":first").val())
       $option.find(".type").change();
     });
@@ -748,8 +772,7 @@ define([
       var $item = $(this).parents(".context_module_item");
       var data = $item.getTemplateData({textValues: ['title', 'url', 'indent', 'new_tab']});
       data.indent = modules.currentIndent($item);
-      $("#edit_item_form").find(".external_url").showIf($item.hasClass('external_url') || $item.hasClass('context_external_tool'));
-      $("#edit_item_form").find(".external_tool").showIf($item.hasClass('context_external_tool'));
+      $("#edit_item_form").find(".external").showIf($item.hasClass('external_url') || $item.hasClass('context_external_tool'));
       $("#edit_item_form").attr('action', $(this).attr('href'));
       $("#edit_item_form").fillFormData(data, {object_name: 'content_tag'});
       $("#edit_item_form").dialog({
@@ -813,8 +836,9 @@ define([
       modules.editModule($module);
     });
 
-    $(".add_module_item_link").live('click', function(event) {
+    $(".add_module_item_link").on('click', function(event) {
       event.preventDefault();
+      $(event.currentTarget).blur();
       var $module = $(this).closest(".context_module");
       if($module.hasClass('collapsed_module')) {
         $module.find(".expand_module_link").triggerHandler('click', function() {
@@ -827,6 +851,8 @@ define([
         var options = {for_modules: true};
         options.select_button_text = I18n.t('buttons.add_item', "Add Item");
         options.holder_name = module.name;
+        options.height = 550;
+        options.width = 770;
         options.dialog_title = I18n.t('titles.add_item', "Add Item to %{module}", {'module': module.name});
         options.submit = function(item_data) {
           var $module = $("#context_module_" + module.id);
@@ -964,8 +990,10 @@ define([
     data = data || $el.data();
     var model = new PublishableModuleItem({
       module_type: data.moduleType,
+      content_id: data.contentId,
       id: data.id,
       module_id: data.moduleId,
+      module_item_id: data.moduleItemId,
       course_id: data.courseId,
       published: data.published,
       publishable: data.publishable,
@@ -975,21 +1003,115 @@ define([
     var row = $el.closest('.ig-row');
     if (data.published) { row.addClass('ig-published'); }
     // TODO: need to go find this item in other modules and update their state
-    view.on('publish', function() {
-      this.$el.closest('.ig-row').addClass('ig-published');
+    model.on('change:published', function() {
+      view.$el.closest('.ig-row').toggleClass('ig-published', model.get('published'));
+      view.render();
     });
-    view.on('unpublish', function() {
-      this.$el.closest('.ig-row').removeClass('ig-published');
-    });
-    view.render()
+    view.render();
+    return view;
   }
+
+  var content_type_map = {
+    'page': 'wiki_page',
+    'discussion': 'discussion_topic',
+    'external_tool': 'context_external_tool',
+    'sub_header': 'context_module_sub_header'
+  };
+  function itemContentKey(model) {
+    if (model === null)
+      return null;
+
+    var attrs = model.attributes || model,
+        content_type = $.underscore(attrs['module_type'] || attrs['type']),
+        content_id = attrs['content_id'] || attrs['id'];
+
+    content_type = content_type_map[content_type] || content_type;
+
+    if (!content_type || content_type === 'module') {
+      return null;
+    } else {
+      if (content_type == 'wiki_page') {
+        content_type = 'wiki_page';
+        content_id = attrs['page_url'] || attrs['id'];
+      } else if (content_type === 'context_module_sub_header' || content_type === 'external_url' || content_type == 'context_external_tool') {
+        content_id = attrs['id'];
+      }
+
+      return content_type + '_' + content_id;
+    }
+  }
+
+  var moduleItems = {};
+  var updateModuleItem = function(attrs, model) {
+    var i, items, item, parsedAttrs;
+    items = moduleItems[itemContentKey(attrs) || itemContentKey(model)];
+    if (items) {
+      for (i = 0; i < items.length; i++) {
+        item = items[i];
+        parsedAttrs = item.model.parse(attrs);
+        item.model.set({published: parsedAttrs.published});
+      }
+    }
+  };
+
+  var overrideModuleModel = function(model) {
+    var publish = model.publish, unpublish = model.unpublish;
+    model.publish = function() {
+      return publish.apply(model, arguments).done(function() {
+        model
+          .fetch({data: {include: 'items'}})
+          .done(function(attrs) {
+            for (var i = 0; i < attrs.items.length; i++)
+              updateModuleItem(attrs.items[i], model);
+          });
+      });
+    };
+    model.unpublish = function() {
+      return unpublish.apply(model, arguments).done(function() {
+        model
+          .fetch({data: {include: 'items'}})
+          .done(function(attrs) {
+            for (var i = 0; i < attrs.items.length; i++)
+              updateModuleItem(attrs.items[i], model);
+          });
+      });
+    };
+  };
+  var overrideItemModel = function(model) {
+    var publish = model.publish, unpublish = model.unpublish;
+    model.publish = function() {
+      return publish.apply(model, arguments).done(function(attrs) {
+        updateModuleItem($.extend({published:true}, attrs), model);
+      });
+    };
+    model.unpublish = function() {
+      return unpublish.apply(model, arguments).done(function(attrs) {
+        updateModuleItem($.extend({published:false}, attrs), model);
+      });
+    };
+  };
+  var overrideModel = function(model, view) {
+    var contentKey = itemContentKey(model);
+    if (contentKey === null)
+      overrideModuleModel(model);
+    else
+      overrideItemModel(model);
+
+    moduleItems[contentKey] || (moduleItems[contentKey] = []);
+    moduleItems[contentKey].push({model: model, view: view});
+  };
 
   $(document).ready(function() {
     if (ENV.ENABLE_DRAFT) {
       $('.publish-icon:visible').each(function(index, el) {
-        initPublishButton($(el));
+        var view = initPublishButton($(el));
+        overrideModel(view.model, view);
       });
     }
+
+    $('.external_url_link').click(function() {
+      window.location = $(this).attr('data-item-href');
+    });
 
     $(".datetime_field").datetime_field();
 

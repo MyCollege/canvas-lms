@@ -28,17 +28,19 @@ module CC
 
     def initialize(content_export, opts={})
       @content_export = content_export
-      @course = opts[:course] || @content_export.course 
+      @course = opts[:course] || @content_export.context
+      raise "CCExporter supports only Courses" unless @course.is_a?(Course) # a Course is a Course, of course, of course
       @user = opts[:user] || @content_export.user
       @export_dir = nil
       @manifest = nil
       @zip_file = nil
       @zip_name = nil
       @logger = Rails.logger
-      @migration_config = Setting.from_config('external_migration')
+      @migration_config = ConfigFile.load('external_migration')
       @migration_config ||= {:keep_after_complete => false}
       @for_course_copy = opts[:for_course_copy]
       @qti_only_export = @content_export && @content_export.qti_export?
+      @manifest_opts = opts.slice(:version)
     end
 
     def self.export(content_export, opts={})
@@ -53,7 +55,7 @@ module CC
         if @qti_only_export
           @manifest = CC::QTI::QTIManifest.new(self)
         else
-          @manifest = Manifest.new(self)
+          @manifest = Manifest.new(self, @manifest_opts)
         end
         @manifest.create_document
         @manifest.close
@@ -137,7 +139,7 @@ module CC
     end
 
     def create_zip_file
-      name = truncate_text(@course.name.to_url, {:max_length => 200, :ellipsis => ''})
+      name = CanvasTextHelper.truncate_text(@course.name.to_url, {:max_length => 200, :ellipsis => ''})
       if @qti_only_export
         @zip_name = "#{name}-quiz-export.zip"
       else

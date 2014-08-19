@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2011 - 2014 Instructure, Inc.
+# Copyright (C) 2011 - 2013 Instructure, Inc.
 #
 # This file is part of Canvas.
 #
@@ -69,6 +69,8 @@ describe Api::V1::User do
           'sis_import_id' => nil,
           'id' => @user.id,
           'short_name' => 'User',
+          'sis_user_id' => 'xyz',
+          'integration_id' => nil,
           'login_id' => 'xyz',
           'sis_login_id' => 'xyz'
         }
@@ -89,9 +91,33 @@ describe Api::V1::User do
           'sis_import_id' => sis_batch.id,
           'id' => @user.id,
           'short_name' => 'User',
+          'sis_user_id' => 'xyz',
+          'integration_id' => nil,
           'login_id' => 'xyz',
           'sis_login_id' => 'xyz'
         }
+    end
+
+    it 'should use an sis pseudonym from another account if necessary' do
+      @user = User.create!(:name => 'User')
+      @account2 = Account.create!
+      @user.pseudonyms.create!(:unique_id => 'abc', :account => @account2) { |p| p.sis_user_id = 'a'}
+      Account.default.any_instantiation.stubs(:trust_exists?).returns(true)
+      Account.default.any_instantiation.stubs(:trusted_account_ids).returns([@account2.id])
+      HostUrl.expects(:context_host).with(@account2).returns('school1')
+      @user.stubs(:find_pseudonym_for_account).with(Account.default).returns(@pseudonym)
+      @test_api.user_json(@user, @admin, {}, [], Account.default).should == {
+          'name' => 'User',
+          'sortable_name' => 'User',
+          'id' => @user.id,
+          'short_name' => 'User',
+          'login_id' => 'abc',
+          'sis_login_id' => 'abc',
+          'sis_user_id' => 'a',
+          'integration_id' => nil,
+          'root_account' => 'school1',
+          'sis_import_id' => nil,
+      }
     end
 
     it 'should use the correct pseudonym' do
@@ -137,7 +163,7 @@ describe Api::V1::User do
 
     def test_context(mock_context, context_to_pass)
       mock_context.expects(:account).returns(mock_context)
-      mock_context.expects(:id).returns(42)
+      mock_context.expects(:global_id).returns(42)
       mock_context.expects(:grants_right?).with(@admin, :manage_students).returns(true)
       if context_to_pass
         @test_api.user_json(@student, @admin, {}, [], context_to_pass)
@@ -148,9 +174,12 @@ describe Api::V1::User do
                       "sis_user_id"=>"sis-user-id",
                       "id"=>@student.id,
                       "short_name"=>"Student",
-                      "login_id"=>"pvuser@example.com",
+                      "sis_user_id"=>"sis-user-id",
+                      "integration_id" => nil,
                       "sis_import_id"=>@student.pseudonym.sis_batch_id,
-                      "sis_login_id"=>"pvuser@example.com"}
+                      "sis_login_id"=>"pvuser@example.com",
+                      "login_id" => "pvuser@example.com"
+      }
     end
 
     it 'should support manually passing the context' do
@@ -168,7 +197,7 @@ describe Api::V1::User do
 
     it 'should support manually passing the current user' do
       @test_api.context = mock()
-      @test_api.context.expects(:id).returns(42)
+      @test_api.context.expects(:global_id).returns(42)
       @test_api.context.expects(:account).returns(@test_api.context)
       @test_api.context.expects(:grants_right?).with(@admin, :manage_students).returns(true)
       @test_api.current_user = @admin
@@ -177,7 +206,7 @@ describe Api::V1::User do
 
     it 'should support loading the current user as a member var' do
       mock_context = mock()
-      mock_context.expects(:id).returns(42)
+      mock_context.expects(:global_id).returns(42)
       mock_context.expects(:account).returns(mock_context)
       mock_context.expects(:grants_right?).with(@admin, :manage_students).returns(true)
       @test_api.current_user = @admin
@@ -266,7 +295,7 @@ describe "Users API", type: :request do
         json = api_call(:get, "/api/v1/users/#{@student.id}/page_views?start_time=#{start_time}",
                            { :controller => "page_views", :action => "index", :user_id => @student.to_param, :format => 'json', :start_time => start_time })
         json.size.should == 2
-        json.each { |j| TimeHelper.try_parse(j['created_at']).to_i.should be >= @timestamp.to_i }
+        json.each { |j| CanvasTime.try_parse(j['created_at']).to_i.should be >= @timestamp.to_i }
       end
 
       it "should recognize end_time parameter" do
@@ -275,7 +304,7 @@ describe "Users API", type: :request do
         json = api_call(:get, "/api/v1/users/#{@student.id}/page_views?end_time=#{end_time}",
                            { :controller => "page_views", :action => "index", :user_id => @student.to_param, :format => 'json', :end_time => end_time })
         json.size.should == 2
-        json.each { |j| TimeHelper.try_parse(j['created_at']).to_i.should be <= @timestamp.to_i }
+        json.each { |j| CanvasTime.try_parse(j['created_at']).to_i.should be <= @timestamp.to_i }
       end
     end
   end
@@ -289,7 +318,7 @@ describe "Users API", type: :request do
 
   it "shouldn't find users in other root accounts by sis id" do
     acct = account_model(:name => 'other root')
-    acct.add_user(@user)
+    acct.account_users.create!(user: @user)
     @me = @user
     course_with_student(:account => acct, :active_all => true, :user => user_with_pseudonym(:name => 's2', :username => 'other@example.com'))
     @other_user = @user
@@ -328,8 +357,10 @@ describe "Users API", type: :request do
           'sis_import_id' => nil,
           'id' => user.id,
           'short_name' => user.short_name,
-          'login_id' => user.pseudonym.unique_id,
-          'sis_login_id' => user.pseudonym.sis_user_id
+          'sis_user_id' => user.pseudonym.sis_user_id,
+          'integration_id' => nil,
+          'sis_login_id' => user.pseudonym.sis_user_id,
+          'login_id' => user.pseudonym.unique_id
         }]
       end
     end
@@ -413,7 +444,7 @@ describe "Users API", type: :request do
     context 'as a site admin' do
       before do
         @site_admin = user_with_pseudonym
-        Account.site_admin.add_user(@site_admin)
+        Account.site_admin.account_users.create!(user: @site_admin)
       end
 
       it "should allow site admins to create users" do
@@ -458,8 +489,16 @@ describe "Users API", type: :request do
           "sis_import_id" => user.pseudonym.sis_batch_id,
           "login_id"      => "test@example.com",
           "sis_login_id"  => "test@example.com",
+          "integration_id" => nil,
           "locale"        => "en"
         }
+      end
+
+      it "should catch invalid dates before passing to the database" do
+        json = api_call(:post, "/api/v1/accounts/#{@site_admin.account.id}/users",
+                        { :controller => 'users', :action => 'create', :format => 'json', :account_id => @site_admin.account.id.to_s },
+                        { :pseudonym => { :unique_id => "test@example.com"},
+                          :user => { :name => "Test User", :birthdate => "-3587-11-20" } }, {}, {:expected_status => 400} )
       end
 
       it "should allow site admins to create users and auto-validate communication channel" do
@@ -606,12 +645,14 @@ describe "Users API", type: :request do
     end
     context "an admin user" do
       it "should be able to update a user" do
+        birthday = Time.now
         json = api_call(:put, @path, @path_options, {
           :user => {
             :name => 'Tobias Funke',
             :short_name => 'Tobias',
             :sortable_name => 'Funke, Tobias',
             :time_zone => 'Tijuana',
+            :birthdate => birthday.iso8601,
             :locale => 'en'
           }
         })
@@ -624,11 +665,27 @@ describe "Users API", type: :request do
           'sis_import_id' => nil,
           'id' => user.id,
           'short_name' => 'Tobias',
+          'integration_id' => nil,
           'login_id' => 'student@example.com',
           'sis_login_id' => 'student@example.com',
           'locale' => 'en'
         }
+        user.birthdate.to_date.should == birthday.to_date
         user.time_zone.name.should eql 'Tijuana'
+      end
+
+      it "should catch invalid dates" do
+        birthday = Time.now
+        json = api_call(:put, @path, @path_options, {
+            :user => {
+                :name => 'Tobias Funke',
+                :short_name => 'Tobias',
+                :sortable_name => 'Funke, Tobias',
+                :time_zone => 'Tijuana',
+                :birthdate => "-4000-02-01 10:20",
+                :locale => 'en'
+            }
+        }, {}, {:expected_status => 400})
       end
 
       it "should allow updating without any params" do
@@ -752,6 +809,92 @@ describe "Users API", type: :request do
         @course.enroll_student(user).accept!
         raw_api_call(:put, path, path_options, manual_mark_as_read: true)
         response.code.should == '401'
+      end
+    end
+  end
+
+  describe "user custom_data" do
+    let(:namespace_a) { 'com.awesome-developer.mobile' }
+    let(:namespace_b) { 'org.charitable-developer.generosity' }
+    let(:scope) { 'nice/scope' }
+    let(:scope2) { 'something-different' }
+    let(:path) { "/api/v1/users/#{@student.to_param}/custom_data/#{scope}" }
+    let(:path2) { "/api/v1/users/#{@student.to_param}/custom_data/#{scope2}" }
+    let(:path_opts_put) { {controller: 'custom_data',
+                              action: 'set_data',
+                              format: 'json',
+                              user_id: @student.to_param,
+                              scope: scope} }
+    let(:path_opts_get) { path_opts_put.merge({action: 'get_data'}) }
+    let(:path_opts_del) { path_opts_put.merge({action: 'delete_data'}) }
+    let(:path_opts_put2) { path_opts_put.merge({scope: scope2}) }
+    let(:path_opts_get2) { path_opts_put2.merge({action: 'get_data'}) }
+
+    it "scopes storage by namespace and a *scope glob" do
+      data = 'boom shaka-laka'
+      other_data = 'whoop there it is'
+      data2 = 'whatevs'
+      other_data2 = 'totes'
+      api_call(:put, path,  path_opts_put,  {ns: namespace_a, data: data})
+      api_call(:put, path2, path_opts_put2, {ns: namespace_a, data: data2})
+      api_call(:put, path,  path_opts_put,  {ns: namespace_b, data: other_data})
+      api_call(:put, path2, path_opts_put2, {ns: namespace_b, data: other_data2})
+
+      body = api_call(:get, path, path_opts_get, {ns: namespace_a})
+      body.should == {'data'=>data}
+
+      body = api_call(:get, path, path_opts_get, {ns: namespace_b})
+      body.should == {'data'=>other_data}
+
+      body = api_call(:get, path2, path_opts_get2, {ns: namespace_a})
+      body.should == {'data'=>data2}
+
+      body = api_call(:get, path2, path_opts_get2, {ns: namespace_b})
+      body.should == {'data'=>other_data2}
+    end
+
+    it "turns JSON hashes into scopes" do
+      data = JSON.parse '{"a":"nice JSON","b":"dont you think?"}'
+      get_path = path + '/b'
+      get_scope = scope + '/b'
+      api_call(:put, path, path_opts_put, {ns: namespace_a, data: data})
+      body = api_call(:get, get_path, path_opts_get.merge({scope: get_scope}), {ns: namespace_a})
+      body.should == {'data'=>'dont you think?'}
+    end
+
+    it "is deleteable" do
+      data = JSON.parse '{"a":"nice JSON","b":"dont you think?"}'
+      del_path = path + '/b'
+      del_scope = scope + '/b'
+      api_call(:put, path, path_opts_put, {ns: namespace_a, data: data})
+      body = api_call(:delete, del_path, path_opts_del.merge({scope: del_scope}), {ns: namespace_a})
+      body.should == {'data'=>'dont you think?'}
+
+      body = api_call(:get, path, path_opts_get, {ns: namespace_a})
+      body.should == {'data'=>{'a'=>'nice JSON'}}
+    end
+
+    context "without a namespace" do
+      it "responds 400 to GET" do
+        api_call(:get, path, path_opts_get, {}, {}, {expected_status: 400})
+      end
+
+      it "responds 400 to PUT" do
+        api_call(:put, path, path_opts_put, {data: 'whatevs'}, {}, {expected_status: 400})
+      end
+
+      it "responds 400 to DELETE" do
+        api_call(:delete, path, path_opts_del, {}, {}, {expected_status: 400})
+      end
+    end
+
+    context "PUT" do
+      it "responds 409 when the requested scope is invalid" do
+        deeper_path = path + '/whoa'
+        deeper_scope = scope + '/whoa'
+        api_call(:put, path, path_opts_put, {ns: namespace_a, data: 'ohai!'})
+        raw_api_call(:put, deeper_path, path_opts_put.merge({scope: deeper_scope}), {ns: namespace_a, data: 'dood'})
+        response.code.should eql '409'
       end
     end
   end

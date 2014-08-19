@@ -24,7 +24,7 @@ require 'coffee-script'
 require File.expand_path(File.dirname(__FILE__) + '/helpers/custom_selenium_rspec_matchers')
 include I18nUtilities
 
-SELENIUM_CONFIG = Setting.from_config("selenium") || {}
+SELENIUM_CONFIG = ConfigFile.load("selenium") || {}
 SERVER_IP = SELENIUM_CONFIG[:server_ip] || UDPSocket.open { |s| s.connect('8.8.8.8', 1); s.addr.last }
 BIND_ADDRESS = SELENIUM_CONFIG[:bind_address] || '0.0.0.0'
 SECONDS_UNTIL_COUNTDOWN = 5
@@ -78,6 +78,9 @@ module SeleniumTestsHelperMethods
         tries ||= 3
         puts "Thread: provisioning selenium driver"
         driver = nil
+        #client = Selenium::WebDriver::Remote::Http::Default.new
+        #client.timeout = 300 ##upping this very high so we catch timeouts in rspec around filter rather than selenium blowing up
+        #options[:http_client] = client
         driver = Selenium::WebDriver.for(browser, options)
       rescue Exception => e
         puts "Thread #{THIS_ENV}\n try ##{tries}\nError attempting to start remote webdriver: #{e}"
@@ -97,7 +100,7 @@ module SeleniumTestsHelperMethods
       end
       raise('error with how selenium is being setup')
     end
-    driver.manage.timeouts.implicit_wait = 10
+    driver.manage.timeouts.implicit_wait = 3
     driver
   end
 
@@ -309,9 +312,8 @@ shared_examples_for "all selenium tests" do
   end
 
   def login_as(username = "nobody@example.com", password = "asdfasdf", expect_success = true)
-    # log out (just in case)
-    driver.navigate.to(app_host + '/logout')
-
+    destroy_session(true)
+    driver.navigate.to(app_host + '/login')
     if expect_success
       expect_new_page_load { fill_in_login_form(username, password) }
       f('#identity .logout').should be_present
@@ -333,9 +335,12 @@ shared_examples_for "all selenium tests" do
     end
   end
 
-  def destroy_session(pseudonym, real_login)
+  def destroy_session(real_login)
     if real_login
-      driver.navigate.to(app_host + '/logout')
+      logout_link = f('#identity .logout a')
+      if logout_link
+        expect_new_page_load { logout_link.click() }
+      end
     else
       PseudonymSession.any_instance.unstub :session_credentials
       PseudonymSession.any_instance.unstub :record
@@ -392,7 +397,6 @@ shared_examples_for "all selenium tests" do
   end
 
   def expect_new_page_load
-    make_full_screen
     driver.execute_script("INST.still_on_old_page = true;")
     yield
     keep_trying_until { driver.execute_script("return INST.still_on_old_page;") == nil }
@@ -692,7 +696,7 @@ shared_examples_for "all selenium tests" do
 
   def stub_kaltura
     # trick kaltura into being activated
-    Kaltura::ClientV3.stubs(:config).returns({
+    CanvasKaltura::ClientV3.stubs(:config).returns({
                                                  'domain' => 'www.instructuremedia.com',
                                                  'resource_domain' => 'www.instructuremedia.com',
                                                  'partner_id' => '100',
@@ -703,9 +707,9 @@ shared_examples_for "all selenium tests" do
                                                  'kcw_ui_conf' => '1',
                                                  'upload_ui_conf' => '1'
                                              })
-    kal = mock('Kaltura::ClientV3')
+    kal = mock('CanvasKaltura::ClientV3')
     kal.stubs(:startSession).returns "new_session_id_here"
-    Kaltura::ClientV3.stubs(:new).returns(kal)
+    CanvasKaltura::ClientV3.stubs(:new).returns(kal)
   end
 
   def page_view(opts={})
@@ -771,6 +775,18 @@ shared_examples_for "all selenium tests" do
     if w > 0 and h > 0
       driver.manage.window.move_to(0, 0)
       driver.manage.window.resize_to(w, h)
+    end
+  end
+
+  def resize_screen_to_normal
+    w, h = driver.execute_script <<-JS
+        if (window.screen) {
+          return [window.screen.availWidth, window.screen.availHeight];
+        }
+    JS
+    if w != 1200 || h != 600
+      driver.manage.window.move_to(0, 0)
+      driver.manage.window.resize_to(1200, 600)
     end
   end
 
@@ -958,7 +974,6 @@ shared_examples_for "all selenium tests" do
       else
         EncryptedCookieStore.test_secret = SecureRandom.hex(64)
       end
-
       enable_forgery_protection
     rescue
       if ENV['PARALLEL_EXECS'] != nil
@@ -977,18 +992,7 @@ shared_examples_for "all selenium tests" do
   append_before (:all) do
     $selenium_driver ||= setup_selenium
     default_url_options[:host] = $app_host_and_port
-  end
-
-  append_before (:all) do
-    unless $check_screen_dimensions
-      w, h = driver.execute_script <<-JS
-        if (window.screen) {
-          return [window.screen.availWidth, window.screen.availHeight];
-        }
-      JS
-      raise("desktop dimensions (#{w}x#{h}) are too small to successfully run the selenium specs, minimum size of 1024x760 is required.") unless w >= 1024 && h >= 760
-      $check_screen_dimensions = true
-    end
+    resize_screen_to_normal
   end
 
   after(:each) do

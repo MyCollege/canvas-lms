@@ -65,7 +65,7 @@ var speakMessage = function ($this, message) {
     date.date = date;
     return date;
   };
-  
+
   $.formatDateTime = function(date, options) {
     var head = "", tail = "";
     if(date) {
@@ -93,8 +93,8 @@ var speakMessage = function ($this, message) {
       result[head + "(5i)" + tail] = "";
     }
     return result;
-  };  
-  
+  };
+
   // fudgeDateForProfileTimezone is used to apply an offset to the date which represents the
   // difference between the user's configured timezone in their profile, and the timezone
   // of the browser. We want to display times in the timezone of their profile. Use
@@ -129,16 +129,49 @@ var speakMessage = function ($this, message) {
   $.midnight = function(date) {
     return date != null && tz.format(date, '%R') == '00:00';
   };
-  $.dateString = function(date) {
-    return (date != null && tz.format(date, $.sameYear(date, new Date()) ? '%b %-d' : '%b %-d, %Y')) || "";
-  };
-  $.timeString = function(date) {
-    return (date != null && tz.format(date, '%l:%M%P')) || "";
-  };
-  $.datetimeString = function(date) {
-    date = tz.parse(date);
+  $.dateString = function(date, otherZone) {
     if (date == null) return "";
-    return I18n.t('#time.event', '%{date} at %{time}', { date: $.dateString(date), time: $.timeString(date) });
+    var format = $.sameYear(date, new Date()) ? '%b %-d' : '%b %-d, %Y';
+    if(arguments.length > 1) return tz.format(date, format, otherZone) || '';
+    return tz.format(date, format) || '';
+  };
+  $.timeString = function(date, otherZone) {
+    if (date == null) return "";
+    if(arguments.length > 1) return tz.format(date, '%l:%M%P', otherZone) || '';
+    return tz.format(date, '%l:%M%P') || '';
+  };
+  $.datetimeString = function(datetime, options) {
+    var localized = options && options.localized;
+    var timezone = options && options.timezone;
+    datetime = tz.parse(datetime);
+    if (datetime == null) return "";
+    if (localized == false) {
+      // temporary unlocalized (which means avoiding tz.format)
+      // expansion of the other branch. intent of being able to call
+      // this with localized false, triggering this code, is if it's
+      // called to fill the value attribute of a datetime picker field,
+      // since the field will complain about localized dates. the real
+      // solution is to teach the datetime picker about parsing
+      // localized date strings (by using tz.parse).
+      //
+      // TODO: implement that real solution and remove this
+      var fudged = $.fudgeDateForProfileTimezone(datetime);
+      datePart = $.sameYear(datetime, new Date()) ? fudged.toString("MMM d") : fudged.toString("MMM d, yyyy");
+      timePart = fudged.toString("h:mmtt").toLowerCase();
+      return datePart + " at " + timePart;
+    }
+    else {
+      var dateValue = null;
+      var timeValue = null;
+      if(typeof timezone == 'string' || timezone instanceof String){
+        dateValue = $.dateString(datetime, timezone);
+        timeValue = $.timeString(datetime, timezone);
+      }else{
+        dateValue = $.dateString(datetime);
+        timeValue = $.timeString(datetime);
+      }
+      return I18n.t('#time.event', '%{date} at %{time}', { date: dateValue, time: timeValue });
+    }
   };
   // end batch
 
@@ -357,6 +390,9 @@ var speakMessage = function ($this, message) {
       }
 
       var $suggest = $('<div class="datetime_suggest" />').insertAfter($thingToPutSuggestAfter);
+      if (ENV && ENV.CONTEXT_TIMEZONE && (ENV.TIMEZONE != ENV.CONTEXT_TIMEZONE)){
+        var $suggest2 = $('<div class="datetime_suggest" />').insertAfter($suggest);
+      }
 
       if (options.addHiddenInput) {
         var $hiddenInput = $('<input type="hidden">').insertAfter($field);
@@ -372,31 +408,53 @@ var speakMessage = function ($this, message) {
         if (options.timeOnly && val && parseInt(val, 10) == val) {
           val += (val < 8) ? "pm" : "am";
         }
-        var d = $.datetime.parse(val);
+        var fudged_d = $.datetime.parse(val);
+        var d = $.unfudgeDateForProfileTimezone(fudged_d);
         var parse_error_message = I18n.t('errors.not_a_date', "That's not a date!");
         var text = parse_error_message;
+        var text2 = ""
         if (!$this.val()) { text = ""; }
-        if (d) {
-          $this.data('date', d);
+        if (d != null) {
+          $this.data('date', fudged_d);
           if ($this.data('hiddenInput')) {
-            $this.data('hiddenInput').val(d);
+            $this.data('hiddenInput').val(fudged_d);
           }
-          if(!options.timeOnly && !options.dateOnly && (d.getHours() || d.getMinutes() || options.alwaysShowTime)) {
-            text = d.toString('ddd MMM d, yyyy h:mmtt');
+          if(!options.timeOnly && !options.dateOnly && (!$.midnight(d) || options.alwaysShowTime)) {
+            text = tz.format(d, "%a %b %-d, %Y %-l:%M%P");
+            if($suggest2) {
+              text2 = tz.format(d,"%a %b %-d, %Y %-l:%M%P", ENV.CONTEXT_TIMEZONE);
+            }
             $this
-              .data('time-hour', d.toString('h'))
-              .data('time-minute', d.toString('mm'))
-              .data('time-ampm', d.toString('tt').toLowerCase());
+              .data('time-hour', tz.format(d, "%-l"))
+              .data('time-minute', tz.format(d, "%M"))
+              .data('time-ampm', tz.format(d, "%P"));
           } else if(!options.timeOnly) {
-            text = d.toString('ddd MMM d, yyyy');
+            text = tz.format(d, "%a %b %-d, %Y");
           } else {
-            text = d.toString('h:mmtt').toLowerCase();
+            text = tz.format(d, "%-l:%M%P");
+            if($suggest2) {
+              text2 = tz.format(d,"%-l:%M%P", ENV.CONTEXT_TIMEZONE);
+            }
           }
+
+          if($suggest2) {
+            if(text2.length > 0){
+              text2 = I18n.t('#helpers.course', 'Course') + ": " + text2;
+              $suggest2.text(text2);
+            } else {
+              $suggest2.text("");
+            }
+          }
+        }
+
+        if(text.length > 0 && $suggest2) {
+          text = I18n.t('#helpers.local', 'Local') + ": " + text;
         }
 
         $suggest
           .toggleClass('invalid_datetime', text == parse_error_message)
           .text(text);
+
         if (text == parse_error_message ) {
           $this.data(
             'accessible-message-timeout',
@@ -596,5 +654,5 @@ var speakMessage = function ($this, message) {
     });
     return $picker;
   };
-  
+
 });

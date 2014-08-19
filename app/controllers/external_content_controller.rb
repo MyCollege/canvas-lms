@@ -28,7 +28,7 @@ class ExternalContentController < ApplicationController
           @retrieved_data[key.to_s.gsub(/\Aeq_/, "")] = value
         end
       end
-    elsif params[:service] == 'external_tool'
+    elsif params[:service] == 'external_tool_dialog' || params[:service] == 'external_tool_redirect'
       params[:return_type] = nil unless ['oembed', 'lti_launch_url', 'url', 'image_url', 'iframe', 'file'].include?(params[:return_type])
       @retrieved_data = params
       if @retrieved_data[:url] && ['oembed', 'lti_launch_url'].include?(params[:return_type])
@@ -61,7 +61,7 @@ class ExternalContentController < ApplicationController
     endpoint = params[:endpoint]
     url = params[:url]
     uri = URI.parse(endpoint + (endpoint.match(/\?/) ? '&url=' : '?url=') + CGI.escape(url) + '&format=json')
-    res = Canvas::HTTP.get(uri.to_s) rescue '{}'
+    res = CanvasHttp.get(uri.to_s) rescue '{}'
     data = JSON.parse(res.body) rescue {}
     if data['type']
       if data['type'] == 'photo' && data['url'].try(:match, /^http/)

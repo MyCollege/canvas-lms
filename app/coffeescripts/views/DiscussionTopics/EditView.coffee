@@ -42,6 +42,11 @@ htmlEscape, DiscussionTopic, Announcement, Assignment, $, preventDefault, Missin
       'change #use_for_grading' : 'toggleAvailabilityOptions'
     )
 
+    messages:
+      group_category_section_label: I18n.t('group_discussion_title', 'Group Discussion')
+      group_category_field_label: I18n.t('this_is_a_group_discussion', 'This is a Group Discussion')
+      group_locked_message: I18n.t('group_discussion_locked', 'Students have already submitted to this discussion, so group settings cannot be changed.')
+
     @optionProperty 'permissions'
 
     initialize: (options) ->
@@ -69,6 +74,7 @@ htmlEscape, DiscussionTopic, Announcement, Assignment, $, preventDefault, Missin
         isLargeRoster: ENV?.IS_LARGE_ROSTER || false
         threaded: data.discussion_type is "threaded"
         draftStateEnabled: ENV.DRAFT_STATE && ENV.DISCUSSION_TOPIC.PERMISSIONS.CAN_MODERATE
+        differentiatedAssignmnetsEnabled: ENV?.DIFFERENTIATED_ASSIGNMENTS_ENABLED || false
       json.assignment = json.assignment.toView()
       json
 
@@ -126,9 +132,12 @@ htmlEscape, DiscussionTopic, Announcement, Assignment, $, preventDefault, Missin
     renderGroupCategoryOptions: =>
       @groupCategorySelector = new GroupCategorySelector
         el: '#group_category_options'
-        parentModel: @assignment
+        parentModel: @model
         groupCategories: ENV.GROUP_CATEGORIES
-        nested: true
+        hideGradeIndividually: true
+        sectionLabel: @messages.group_category_section_label
+        fieldLabel: @messages.group_category_field_label
+        lockedMessage: @messages.group_locked_message
 
       @groupCategorySelector.render()
 
@@ -145,6 +154,8 @@ htmlEscape, DiscussionTopic, Announcement, Assignment, $, preventDefault, Missin
       data.title ||= I18n.t 'default_discussion_title', 'No Title'
       data.discussion_type = if data.threaded is '1' then 'threaded' else 'side_comment'
       data.podcast_has_student_posts = false unless data.podcast_enabled is '1'
+      unless ENV?.IS_LARGE_ROSTER
+        data = @groupCategorySelector.filterFormData data
 
       assign_data = data.assignment
       delete data.assignment
@@ -169,14 +180,14 @@ htmlEscape, DiscussionTopic, Announcement, Assignment, $, preventDefault, Missin
       data
 
     updateAssignment: (data) =>
-      unless ENV?.IS_LARGE_ROSTER
-        data = @groupCategorySelector.filterFormData data
       @dueDateOverrideView.updateOverrides()
       defaultDate = @dueDateOverrideView.getDefaultDueDate()
       data.lock_at = defaultDate?.get('lock_at') or null
       data.unlock_at = defaultDate?.get('unlock_at') or null
       data.due_at = defaultDate?.get('due_at') or null
       data.assignment_overrides = @dueDateOverrideView.getOverrides()
+      if ENV?.DIFFERENTIATED_ASSIGNMENTS_ENABLED
+        data.only_visible_to_overrides = @dueDateOverrideView.containsSectionsWithoutOverrides()
 
       assignment = @model.get('assignment')
       assignment or= @model.createAssignment()

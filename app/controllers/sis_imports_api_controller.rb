@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2011 - 2013 Instructure, Inc.
+# Copyright (C) 2011 - 2014 Instructure, Inc.
 #
 # This file is part of Canvas.
 #
@@ -168,7 +168,7 @@ class SisImportsApiController < ApplicationController
   # Returns the list of SIS imports for an account
   #
   #   Examples:
-  #     curl 'https://<canvas>/api/v1/accounts/<account_id>/sis_imports' \ 
+  #     curl 'https://<canvas>/api/v1/accounts/<account_id>/sis_imports' \
   #         -H "Authorization: Bearer <token>"
   #
   # @returns [SisImport]
@@ -201,7 +201,7 @@ class SisImportsApiController < ApplicationController
   #   be SIS data from a file upload form field named 'attachment'.
   #
   #   Examples:
-  #     curl -F attachment=@<filename> -H "Authorization: Bearer <token>" \ 
+  #     curl -F attachment=@<filename> -H "Authorization: Bearer <token>" \
   #         'https://<canvas>/api/v1/accounts/<account_id>/sis_imports.json?import_type=instructure_csv'
   #
   #   If you decide to do a raw post, you can skip the 'attachment' argument,
@@ -209,20 +209,20 @@ class SisImportsApiController < ApplicationController
   #   You are encouraged to also provide the 'extension' argument.
   #
   #   Examples:
-  #     curl -H 'Content-Type: application/octet-stream' --data-binary @<filename>.zip \ 
-  #         -H "Authorization: Bearer <token>" \ 
+  #     curl -H 'Content-Type: application/octet-stream' --data-binary @<filename>.zip \
+  #         -H "Authorization: Bearer <token>" \
   #         'https://<canvas>/api/v1/accounts/<account_id>/sis_imports.json?import_type=instructure_csv&extension=zip'
   #
-  #     curl -H 'Content-Type: application/zip' --data-binary @<filename>.zip \ 
-  #         -H "Authorization: Bearer <token>" \ 
+  #     curl -H 'Content-Type: application/zip' --data-binary @<filename>.zip \
+  #         -H "Authorization: Bearer <token>" \
   #         'https://<canvas>/api/v1/accounts/<account_id>/sis_imports.json?import_type=instructure_csv'
   #
-  #     curl -H 'Content-Type: text/csv' --data-binary @<filename>.csv \ 
-  #         -H "Authorization: Bearer <token>" \ 
+  #     curl -H 'Content-Type: text/csv' --data-binary @<filename>.csv \
+  #         -H "Authorization: Bearer <token>" \
   #         'https://<canvas>/api/v1/accounts/<account_id>/sis_imports.json?import_type=instructure_csv'
   #
-  #     curl -H 'Content-Type: text/csv' --data-binary @<filename>.csv \ 
-  #         -H "Authorization: Bearer <token>" \ 
+  #     curl -H 'Content-Type: text/csv' --data-binary @<filename>.csv \
+  #         -H "Authorization: Bearer <token>" \
   #         'https://<canvas>/api/v1/accounts/<account_id>/sis_imports.json?import_type=instructure_csv&batch_mode=1&batch_mode_term_id=15'
   #
   # @argument extension [Optional,String]
@@ -302,7 +302,7 @@ class SisImportsApiController < ApplicationController
       end
 
       batch_mode_term = nil
-      if params[:batch_mode].to_i > 0
+      if value_to_boolean(params[:batch_mode])
         if params[:batch_mode_term_id].present?
           batch_mode_term = api_find(@account.enrollment_terms.active,
                                            params[:batch_mode_term_id])
@@ -312,17 +312,17 @@ class SisImportsApiController < ApplicationController
         end
       end
 
-      batch = SisBatch.create_with_attachment(@account, params[:import_type], file_obj) do |batch|
+      batch = SisBatch.create_with_attachment(@account, params[:import_type], file_obj, @current_user) do |batch|
         if batch_mode_term
           batch.batch_mode = true
           batch.batch_mode_term = batch_mode_term
         end
 
         batch.options ||= {}
-        if params[:override_sis_stickiness].to_i > 0
+        if value_to_boolean(params[:override_sis_stickiness])
           batch.options[:override_sis_stickiness] = true
           [:add_sis_stickiness, :clear_sis_stickiness].each do |option|
-            batch.options[option] = true if params[option].to_i > 0
+            batch.options[option] = true if value_to_boolean(params[option])
           end
         end
       end
@@ -345,7 +345,7 @@ class SisImportsApiController < ApplicationController
   # Get the status of an already created SIS import.
   #
   #   Examples:
-  #     curl 'https://<canvas>/api/v1/accounts/<account_id>/sis_imports/<sis_import_id>' \ 
+  #     curl 'https://<canvas>/api/v1/accounts/<account_id>/sis_imports/<sis_import_id>' \
   #         -H "Authorization: Bearer <token>"
   #
   # @returns SisImport

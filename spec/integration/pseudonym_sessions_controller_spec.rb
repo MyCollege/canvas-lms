@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2011 Instructure, Inc.
+# Copyright (C) 2011 - 2014 Instructure, Inc.
 #
 # This file is part of Canvas.
 #
@@ -36,10 +36,16 @@ describe PseudonymSessionsController do
     end
 
     def stubby(stub_response)
-      @cas_client = CASClient::Client.new({:cas_base_url => @account.account_authorization_config.auth_base})
+      @cas_client = CASClient::Client.new(
+        cas_base_url: @account.account_authorization_config.auth_base,
+        encode_extra_attributes_as: :raw
+      )
       @cas_client.instance_variable_set(:@stub_response, stub_response)
       def @cas_client.validate_service_ticket(st)
-        st.response = CASClient::ValidationResponse.new(@stub_response)
+        response = CASClient::ValidationResponse.new(@stub_response)
+        st.user = response.user
+        st.success = response.is_success?
+        return st
       end
       PseudonymSessionsController.any_instance.stubs(:cas_client).returns(@cas_client)
     end
@@ -56,7 +62,7 @@ describe PseudonymSessionsController do
       response.should redirect_to(dashboard_url(:login_success => 1))
       session[:cas_session].should == 'ST-abcd'
 
-      get logout_url
+      delete logout_url
       response.should redirect_to(@cas_client.logout_url(cas_login_url))
     end
 
@@ -205,7 +211,7 @@ describe PseudonymSessionsController do
 
   it "should redirect back for jobs controller" do
     user_with_pseudonym(:password => 'qwerty', :active_all => 1)
-    Account.site_admin.add_user(@user)
+    Account.site_admin.account_users.create!(user: @user)
 
     get jobs_url
     response.should redirect_to login_url

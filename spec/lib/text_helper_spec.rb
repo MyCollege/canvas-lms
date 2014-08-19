@@ -75,9 +75,19 @@ describe TextHelper do
       th.datetime_string(today).split.size.should == (datestring.split.size - 1)
     end
 
+    it "accepts a timezone override" do
+      datetime = Time.zone.parse("#{Time.zone.now.year}-01-01 12:00:00")
+      mountain = th.datetime_string(datetime, :event, nil, false, ActiveSupport::TimeZone["America/Denver"])
+      central = th.datetime_string(datetime, :event, nil, false, ActiveSupport::TimeZone["America/Chicago"])
+      mountain.should == "Jan 1 at  5am"
+      central.should == "Jan 1 at  6am"
+    end
+
   end
 
   context "time_string" do
+    before { Timecop.freeze(Time.utc(2010, 8, 18, 12, 21)) }
+    after { Timecop.return }
 
     it "should be formatted properly" do
       time = Time.zone.now
@@ -89,6 +99,14 @@ describe TextHelper do
       time = Time.zone.now
       time -= time.min.minutes
       th.time_string(time).should == I18n.l(time, :format => :tiny_on_the_hour)
+    end
+
+    it "accepts a timezone override" do
+      time = Time.zone.now
+      mountain = th.time_string(time, nil, ActiveSupport::TimeZone["America/Denver"])
+      central = th.time_string(time, nil, ActiveSupport::TimeZone["America/Chicago"])
+      mountain.should == " 6:21am"
+      central.should == " 7:21am"
     end
 
   end
@@ -137,33 +155,6 @@ describe TextHelper do
       start_date = Time.parse("2012-01-01 12:00:00")
       end_date = Time.parse("2012-01-08 12:00:00")
       th.date_string(start_date, end_date).should == "#{th.date_string(start_date)} to #{th.date_string(end_date)}"
-    end
-  end
-
-  context "truncate_text" do
-    it "should not split if max_length is exact text length" do
-      str = "I am an exact length"
-      th.truncate_text(str, :max_length => str.length).should == str
-    end
-
-    it "should split on multi-byte character boundaries" do
-      str = "This\ntext\nhere\n获\nis\nutf-8"
-      
-      th.truncate_text(str, :max_length => 9).should ==  "This\nt..."
-      th.truncate_text(str, :max_length => 18).should == "This\ntext\nhere\n..."
-      th.truncate_text(str, :max_length => 19).should == "This\ntext\nhere\n获..."
-      th.truncate_text(str, :max_length => 20).should == "This\ntext\nhere\n获\n..."
-      th.truncate_text(str, :max_length => 21).should == "This\ntext\nhere\n获\ni..."
-      th.truncate_text(str, :max_length => 22).should == "This\ntext\nhere\n获\nis..."
-      th.truncate_text(str, :max_length => 23).should == "This\ntext\nhere\n获\nis\n..."
-      th.truncate_text(str, :max_length => 80).should == str
-    end
-
-    it "should split on words if specified" do
-      str = "I am a sentence with areallylongwordattheendthatcantbesplit and then a few more words"
-      th.truncate_text(str, :max_words => 4, :max_length => 30).should == "I am a sentence"
-      th.truncate_text(str, :max_words => 6, :max_length => 30).should == "I am a sentence with areall..."
-      th.truncate_text(str, :max_words => 5, :max_length => 20).should == "I am a sentence with"
     end
   end
 
@@ -255,88 +246,6 @@ Ad dolore andouille meatball irure, ham hock tail exercitation minim ribeye sint
       it "should not inlinify multiple paragraphs" do
         th.mt(:foo, "para1\n\npara2").
           should == "<p>para1</p>\n\n<p>para2</p>"
-      end
-    end
-  end
-
-  it "should strip out invalid utf-8" do
-    test_strings = {
-      "hai\xfb" => "hai",
-      "hai\xfb there" => "hai there",
-      "hai\xfba" => "haia",
-      "hai\xfbab" => "haiab",
-      "hai\xfbabc" => "haiabc",
-      "hai\xfbabcd" => "haiabcd"
-    }
-  
-    test_strings.each do |input, output|
-      input = input.dup.force_encoding("UTF-8")
-      TextHelper.strip_invalid_utf8(input).should == output
-    end
-  end
-
-  describe "YAML invalid UTF8 stripping" do
-    it "should recursively strip out invalid utf-8" do
-      data = YAML.load(%{
----
-answers:
-- !map:HashWithIndifferentAccess
-  id: 2
-  text: "t\xEAwo"
-  valid_ascii: !binary |
-    oHRleHSg
-      }.strip)
-      answer = data['answers'][0]['text']
-      answer.valid_encoding?.should be_false
-      TextHelper.recursively_strip_invalid_utf8!(data, true)
-      answer.should == "two"
-      answer.encoding.should == Encoding::UTF_8
-      answer.valid_encoding?.should be_true
-
-      # in some edge cases, Syck will return a string as ASCII-8BIT if it's not valid UTF-8
-      # so we added a force_encoding step to recursively_strip_invalid_utf8!
-      ascii = data['answers'][0]['valid_ascii']
-      ascii.should == 'text'
-      ascii.encoding.should == Encoding::UTF_8
-    end
-
-    it "should strip out invalid utf-8 when deserializing a column" do
-      # non-binary invalid utf-8 can't even be inserted into the db in this environment,
-      # so we only test the !binary case here
-      yaml_blob = %{
----
- answers:
- - !map:HashWithIndifferentAccess
-   weight: 0
-   id: 2
-   html: ab&ecirc;cd.
-   valid_ascii: !binary |
-     oHRleHSg
-   migration_id: QUE_2
- question_text: What is the answer
- position: 2
-      }.force_encoding('binary').strip
-      # now actually insert it into an AR column
-      aq = assessment_question_model(bank: AssessmentQuestionBank.create!(context: Course.create!))
-      AssessmentQuestion.where(:id => aq).update_all(:question_data => yaml_blob)
-      text = aq.reload.question_data['answers'][0]['valid_ascii']
-      text.should == "text"
-      text.encoding.should == Encoding::UTF_8
-    end
-
-    describe "unserialize_attribute_with_utf8_check" do
-      it "should not strip columns not on the list" do
-        TextHelper.expects(:recursively_strip_invalid_utf8!).never
-        a = Account.find(Account.default.id)
-        a.settings # deserialization is lazy, trigger it
-      end
-
-      it "should strip columns on the list" do
-        TextHelper.unstub(:recursively_strip_invalid_utf8!)
-        aq = assessment_question_model(bank: AssessmentQuestionBank.create!(context: Course.create!))
-        TextHelper.expects(:recursively_strip_invalid_utf8!).with(instance_of(HashWithIndifferentAccess), true)
-        aq = AssessmentQuestion.find(aq)
-        aq.question_data
       end
     end
   end

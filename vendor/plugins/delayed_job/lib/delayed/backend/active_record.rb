@@ -21,7 +21,7 @@ module Delayed
         self.table_name = :delayed_jobs
 
         def self.reconnect!
-          connection.reconnect!
+          clear_all_connections!
         end
 
         class << self
@@ -334,7 +334,7 @@ module Delayed
 
         def fail!
           attrs = self.attributes
-          attrs['original_id'] = attrs.delete('id')
+          attrs['original_job_id'] = attrs.delete('id')
           attrs['failed_at'] ||= self.class.db_time_now
           attrs.delete('next_in_strand')
           self.class.transaction do

@@ -76,6 +76,7 @@ define [
           parentLabelText: @messages.ag_move_label
           parentKey: 'assignment_group_id'
           childKey: 'assignments'
+          closeTarget: @$el.find('a[id*=manage_link]')
           saveURL: -> "#{ENV.URLS.assignment_sort_base_url}/#{@parentListView.value()}/reorder"
 
       @dateDueColumnView       = new DateDueColumnView(model: @model)
@@ -158,7 +159,14 @@ define [
 
     onDelete: (e) =>
       e.preventDefault()
-      @delete() if confirm(@messages.confirm)
+      return @$el.find('a[id*=manage_link]').focus() unless confirm(@messages.confirm)
+      if @previousAssignmentInGroup()?
+        @focusOnAssignment(@previousAssignmentInGroup())
+        @delete()
+      else
+        id = @model.attributes.assignment_group_id
+        @delete()
+        @focusOnGroupByID(id)
 
     delete: ->
       @model.destroy()
@@ -185,6 +193,9 @@ define [
       'letter_grade':
         nonscreenreader: "#{grade}"
         screenreader: I18n.t 'grade_letter_grade_screenreader', 'Grade: %{grade}', grade: grade
+      'gpa_scale':
+        nonscreenreader: "#{grade}"
+        screenreader: I18n.t 'grade_gpa_scale_screenreader', 'Grade: %{grade}', grade: grade
 
 
     _setJSONForGrade: (json) ->

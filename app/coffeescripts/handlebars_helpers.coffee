@@ -39,17 +39,41 @@ define [
       new Handlebars.SafeString semanticDateRange arguments...
 
     # expects: a Date object or an ISO string
-    friendlyDatetime : (datetime, {hash: {pubdate}}) ->
+    contextSensitiveDatetimeTitle : (datetime, {hash: {justText}})->
+      localDatetime = $.datetimeString(datetime)
+      titleText = localDatetime
+      if ENV and ENV.CONTEXT_TIMEZONE and (ENV.TIMEZONE != ENV.CONTEXT_TIMEZONE)
+        localText = Handlebars.helpers.t('#helpers.local','Local')
+        courseText = Handlebars.helpers.t('#helpers.course', 'Course')
+        courseDatetime = $.datetimeString(datetime, timezone: ENV.CONTEXT_TIMEZONE)
+        if localDatetime != courseDatetime
+          titleText = "#{localText}: #{localDatetime}<br>#{courseText}: #{courseDatetime}"
+
+      if justText
+        new Handlebars.SafeString titleText
+      else
+        new Handlebars.SafeString "data-tooltip title=\"#{titleText}\""
+
+    # expects: a Date object or an ISO string
+    friendlyDatetime : (datetime, {hash: {pubdate, contextSensitive}}) ->
       return unless datetime?
       datetime = tz.parse(datetime) unless _.isDate datetime
-      fudged = $.fudgeDateForProfileTimezone(datetime)
-      new Handlebars.SafeString "<time title='#{$.datetimeString(datetime)}' datetime='#{datetime.toISOString()}' #{'pubdate' if pubdate}>#{$.friendlyDatetime(fudged)}</time>"
+      fudged = $.fudgeDateForProfileTimezone(tz.parse(datetime))
+      timeTitle = ""
+      if contextSensitive and ENV and ENV.CONTEXT_TIMEZONE
+        timeTitle = Handlebars.helpers.contextSensitiveDatetimeTitle(datetime, hash: {justText: true})
+      else
+        timeTitle = $.datetimeString(datetime)
+
+      new Handlebars.SafeString "<time data-tooltip title='#{timeTitle}' datetime='#{datetime.toISOString()}' #{'pubdate' if pubdate}>#{$.friendlyDatetime(fudged)}</time>"
+
+
 
     # expects: a Date object or an ISO string
     formattedDate : (datetime, format, {hash: {pubdate}}) ->
       return unless datetime?
       datetime = tz.parse(datetime) unless _.isDate datetime
-      new Handlebars.SafeString "<time title='#{$.datetimeString(datetime)}' datetime='#{datetime.toISOString()}' #{'pubdate' if pubdate}>#{datetime.toString(format)}</time>"
+      new Handlebars.SafeString "<time data-tooltip title='#{$.datetimeString(datetime)}' datetime='#{datetime.toISOString()}' #{'pubdate' if pubdate}>#{datetime.toString(format)}</time>"
 
     # IMPORTANT: these next two handlebars helpers emit profile-timezone
     # human-formatted strings. don't send them as is to the server (you can
@@ -58,8 +82,8 @@ define [
     # stored elsewhere).
 
     # expects: anything that $.datetimeString can handle
-    datetimeFormatted : (datetime) ->
-      $.datetimeString(datetime)
+    datetimeFormatted : (datetime, localized=true) ->
+      $.datetimeString(datetime, {localized: localized})
 
     # Strips the time information from the datetime and accounts for the user's
     # timezone preference. expects: anything tz() can handle
@@ -113,7 +137,11 @@ define [
     # use this method to process any user content fields returned in api responses
     # this is important to handle object/embed tags safely, and to properly display audio/video tags
     convertApiUserContent: (html, {hash}) ->
-      new Handlebars.SafeString convertApiUserContent(html, hash)
+      content = convertApiUserContent(html, hash)
+      # if the content is going to get picked up by tinymce, do not mark as safe
+      # because we WANT it to be escaped again.
+      content = new Handlebars.SafeString content unless hash and hash.forEditing
+      content
 
     newlinesToBreak : (string) ->
       # Convert a null to an empty string so it doesn't blow up.
@@ -284,8 +312,10 @@ define [
       attributes = for key, val of inputProps when val?
         "#{htmlEscape key}=\"#{htmlEscape val}\""
 
+      hiddenDisabled = if inputProps.disabled then "disabled" else ""
+
       new Handlebars.SafeString """
-        <input name="#{htmlEscape inputProps.name}" type="hidden" value="0" />
+        <input name="#{htmlEscape inputProps.name}" type="hidden" value="0" #{hiddenDisabled}>
         <input #{attributes.join ' '} />
       """
 

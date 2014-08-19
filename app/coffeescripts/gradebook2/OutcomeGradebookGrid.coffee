@@ -222,6 +222,11 @@ define [
           result
         , {})
 
+      saveOutcomePaths: (outcomePaths) ->
+        outcomePaths.forEach (path) ->
+          pathString = _.pluck(path.parts, 'name').join(' > ')
+          Grid.outcomes["outcome_#{path.id}"].path = pathString
+
       # Public: Look up an outcome in the current outcome list.
       #
       # name - The name of the outcome to look for.
@@ -298,6 +303,12 @@ define [
         mode = _.reject(counts, (n) -> n[0] < max)
         mode = Grid.Math.mean(_.map(mode, _.last), true)
 
+      max: (values) -> Math.max(values...)
+
+      min: (values) -> Math.min(values...)
+
+      cnt: (values) -> values.length
+
     View:
       # Public: Render a SlickGrid cell.
       #
@@ -323,7 +334,7 @@ define [
         return unless outcome and _.isNumber(value)
         className   = Grid.View.masteryClassName(value, outcome)
         return '' if shouldFilter and !_.include(Grid.filter, className)
-        cellTemplate(score: value, className: className, masteryScore: outcome.mastery_points)
+        cellTemplate(score: Math.round(value * 100.0) / 100.0, className: className, masteryScore: outcome.mastery_points)
 
       studentCell: (row, cell, value, columnDef, dataContext) ->
         studentCellTemplate(value)

@@ -20,35 +20,33 @@ require 'spec_helper'
 
 describe LtiOutbound::LTIModel do
   class Dummy < LtiOutbound::LTIModel
-    attr_accessor :test
-    add_variable_mapping '.test', :test
+    proc_accessor :attribute
   end
 
-  describe '#has_variable_mapping?' do
-    it 'returns true if mapping exists' do
+    describe '#proc_accessor' do
+    it 'acts as a regular attr_accessor for assigned values' do
       model = Dummy.new
-      expect(model.has_variable_mapping?('.test')).to eq true
+      model.attribute = 'test_value'
+      expect(model.attribute).to eq 'test_value'
     end
 
-    it 'returns false if mapping does not exist' do
-      model = Dummy.new
-      expect(model.has_variable_mapping?('.none')).to eq false
-    end
-  end
-
-  describe '#variable_substitution_mapping' do
-    it 'returns nil for any variable_substitution_call' do
-      model = LtiOutbound::LTIModel.new
-      expect(model.variable_substitution_mapping(:something)).to eq nil
-      expect(model.variable_substitution_mapping(:something_else)).to eq nil
-      expect(model.variable_substitution_mapping(nil)).to eq nil
-      expect(model.variable_substitution_mapping([])).to eq nil
+    it 'handles multiple attributes at once' do
+      Dummy.proc_accessor(:test1, :test2)
     end
 
-    it 'calls the mapped method' do
+    it 'evaluates a proc when assigned a proc' do
       model = Dummy.new
-      model.test = 'value'
-      expect(model.variable_substitution_mapping('.test')).to eq 'value'
+      model.attribute = -> { 'test_value' }
+      expect(model.attribute).to eq 'test_value'
+    end
+
+    it 'caches the result of the executed proc' do
+      model = Dummy.new
+      obj = double(:message => 'message')
+      model.attribute = -> { obj.message() }
+      2.times { model.attribute }
+
+      expect(obj).to have_received(:message).once
     end
   end
 end

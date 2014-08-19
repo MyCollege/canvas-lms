@@ -116,7 +116,6 @@ define [
         Ember.$('.ui-dialog:visible').remove()
       @alert.restore()
       @server.restore()
-
       Ember.run App, 'destroy'
 
   test 'default grade dialog updates the current students grade', ->
@@ -135,7 +134,7 @@ define [
   test 'group weights dialog update groups weights and final grade', ->
     $dialog = null
     visit('/').then =>
-      initial_final_grade = find(".total-grade").last().text()
+      initial_final_grade = find(".total-grade").text()
       equal(parseFloat(initial_final_grade), "2.1")
       openDialog("#ag_weights").then =>
         $dialog = find('.ui-dialog:visible', 'body')
@@ -146,7 +145,33 @@ define [
             click(find('.ui-button', $dialog))
             mockServerResponse(@server, "/api/v1/courses/1/assignment_groups/1", @modified_assignment_group)
             andThen =>
-              new_final_grade = find(".total-grade").last().text()
+              new_final_grade = find(".total-grade").text()
               assignment_group_text = find(".assignment-group-grade").first().text()
               equal(parseFloat(new_final_grade), "3")
-              notEqual(assignment_group_text.indexOf("100% of grade"), -1)
+              notEqual(assignment_group_text.indexOf("3 / 100"), -1)
+
+  module 'screenreader_gradebook: curve grades display',
+    setup: ->
+      App = startApp()
+      visit('/').then =>
+        @controller = App.__container__.lookup('controller:screenreader_gradebook')
+        @selected = @controller.get('assignments').objectAt(0)
+        Ember.run =>
+          @controller.set('selectedAssignment', @selected)
+
+    teardown: ->
+      Ember.run App, 'destroy'
+
+  test 'curve grades button does display with points poisslbe', ->
+    curve_button_text = find('#curve_grades').text()
+    notEqual(curve_button_text.indexOf("Curve Grades"), -1)
+
+  test 'curve grades button does not display with 0 points possible', ->
+    Ember.run =>
+      @controller.set('selectedAssignment.points_possible', 0)
+    equal(find('#curve_grades').text(), "")
+
+  test 'curve grades button does not display with null points poisslbe', ->
+    Ember.run =>
+      @controller.set('selectedAssignment.points_possible', null)
+    equal(find('#curve_grades').text(), "")

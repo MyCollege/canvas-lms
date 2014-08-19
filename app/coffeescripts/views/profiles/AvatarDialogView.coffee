@@ -116,7 +116,7 @@ define [
         'attachment[duplicate_handling]': 'overwrite'
         'attachment[folder_id]': ENV.folder_id
         'attachment[filename]': 'profile.jpg'
-        'attachment[context_code]': ENV.context_asset_string
+        'attachment[context_code]': 'user_'+ENV.current_user_id
       })
 
     onPreflight: (image, response) =>
@@ -178,8 +178,8 @@ define [
       }).then(_.partial(@updateDomAvatar, url))
 
     updateDomAvatar: (url) =>
-      $('.profile_pic_link img, .profile-link img')
-        .attr('src', url)
+      $('.profile_pic_link, .profile-link')
+        .css('background-image', "url('#{url}')")
       @close()
 
     onNav: (e) ->

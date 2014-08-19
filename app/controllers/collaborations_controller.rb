@@ -56,7 +56,6 @@ class CollaborationsController < ApplicationController
   before_filter :reject_student_view_student
 
   include Api::V1::Collaborator
-  include GoogleDocs
 
   def index
     return unless authorized_action(@context, @current_user, :read) &&
@@ -64,7 +63,8 @@ class CollaborationsController < ApplicationController
 
     @collaborations = @context.collaborations.active
     log_asset_access("collaborations:#{@context.asset_string}", "collaborations", "other")
-    @google_docs = google_docs_verify_access_token rescue false
+
+    @google_docs_authorized = google_docs_connection.verify_access_token rescue false
     js_env :TITLE_MAX_LEN => Collaboration::TITLE_MAX_LENGTH,
            :collaboration_types => Collaboration.collaboration_types
   end

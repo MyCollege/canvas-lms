@@ -81,10 +81,15 @@
 #           "format": "int64"
 #         },
 #         "extra_time": {
-#           "description": "Amount of extra time allowed for the quiz submission, in seconds.",
+#           "description": "Amount of extra time allowed for the quiz submission, in minutes.",
 #           "example": 60,
 #           "type": "integer",
 #           "format": "int64"
+#         },
+#         "manually_unlocked": {
+#           "description": "The student can take the quiz even if it's locked for everyone else",
+#           "example": true,
+#           "type": "boolean"
 #         },
 #         "time_spent": {
 #           "description": "Amount of time spent, in seconds.",
@@ -115,6 +120,11 @@
 #           "example": 1,
 #           "type": "integer",
 #           "format": "int64"
+#         },
+#         "has_seen_results": {
+#           "description": "Whether the student has viewed their results to the quiz.",
+#           "example": true,
+#           "type": "boolean"
 #         },
 #         "workflow_state": {
 #           "description": "The current state of the quiz submission. Possible values: ['untaken'|'pending_review'|'complete'|'settings_only'|'preview'].",

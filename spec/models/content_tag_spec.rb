@@ -409,6 +409,29 @@ describe ContentTag do
     @tag2.reload
     @tag2.workflow_state.should == 'unpublished'
   end
+
+  it "should publish content via publish!" do
+    Account.default.enable_feature!(:draft_state)
+    assignment_model
+    @assignment.unpublish!
+    @module = @course.context_modules.create!
+    @tag = @module.add_item(type: 'Assignment', id: @assignment.id)
+    @tag.workflow_state = 'active'
+    @tag.content.expects(:publish!).once
+    @tag.save!
+    @tag.update_asset_workflow_state!
+  end
+
+  it "should unpublish content via unpublish!" do
+    Account.default.enable_feature!(:draft_state)
+    quiz_model
+    @module = @course.context_modules.create!
+    @tag = @module.add_item(type: 'Quiz', id: @quiz.id)
+    @tag.workflow_state = 'unpublished'
+    @tag.content.expects(:unpublish!).once
+    @tag.save!
+    @tag.update_asset_workflow_state!
+  end
   
   it "should not rename tag if linked attachment is renamed" do
     course
@@ -433,7 +456,6 @@ describe ContentTag do
     tag.update_asset_name!
     
     att.reload
-    att.filename.should == 'important title.txt'
     att.display_name.should == 'important title.txt'
   end
 
@@ -491,6 +513,28 @@ describe ContentTag do
       content_tag = ContentTag.create! content: assignment_model, context: course_model
 
       content_tag.content_type.should == 'Assignment'
+    end
+  end
+
+  describe "destroy" do
+    it "updates completion requirements on its associated ContextModule" do
+      course_with_teacher(:active_all => true)
+
+      @module = @course.context_modules.create!(:name => "some module")
+      @assignment = @course.assignments.create!(:title => "some assignment")
+      @assignment2 = @course.assignments.create!(:title => "some assignment2")
+
+      @tag = @module.add_item({:id => @assignment.id, :type => 'assignment'})
+      @tag2 = @module.add_item({:id => @assignment2.id, :type => 'assignment'})
+
+      @module.completion_requirements = [{id: @tag.id, type: 'must_submit'},
+                                         {id: @tag2.id, type: 'must_submit'}]
+
+      @module.save
+
+      @tag.destroy
+
+      @module.reload.completion_requirements.should == [{id: @tag2.id, type: 'must_submit'}]
     end
   end
 end

@@ -48,12 +48,18 @@ class ErrorReport < ActiveRecord::Base
 
     attr_reader :opts, :exception
 
+    def self.hostname
+      @cached_hostname ||= Socket.gethostname
+    end
+
     def log_error(category, opts)
       opts[:category] = category.to_s.presence || 'default'
       @opts = opts
       # sanitize invalid encodings
-      @opts[:message] = TextHelper.strip_invalid_utf8(@opts[:message]) if @opts[:message]
-      @opts[:exception_message] = TextHelper.strip_invalid_utf8(@opts[:exception_message]) if @opts[:exception_message]
+      @opts[:message] = Utf8Cleaner.strip_invalid_utf8(@opts[:message]) if @opts[:message]
+      @opts[:exception_message] = Utf8Cleaner.strip_invalid_utf8(@opts[:exception_message]) if @opts[:exception_message]
+      @opts[:hostname] = self.class.hostname
+      @opts[:pid] = Process.pid
       CanvasStatsd::Statsd.increment("errors.all")
       CanvasStatsd::Statsd.increment("errors.#{category}")
       run_callbacks :on_log_error
@@ -133,7 +139,7 @@ class ErrorReport < ActiveRecord::Base
   def url=(val)
     write_attribute(:url, LoggingFilter.filter_uri(val))
   end
-  
+
   def guess_email
     self.email = nil if self.email && self.email.empty?
     self.email ||= self.user.email rescue nil

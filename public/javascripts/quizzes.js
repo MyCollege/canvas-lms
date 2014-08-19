@@ -86,6 +86,14 @@ define([
     }
   }
 
+  var isShowingResults = function() {
+    return $('#never_hide_results').prop('checked');
+  };
+
+  var isShowingResultsJustOnce = function() {
+    return $('#quiz_one_time_results').prop('checked');
+  };
+
   if (ENV.QUIZ && ENV.ASSIGNMENT_OVERRIDES != null) {
 
     ENV.QUIZ.assignment_overrides = ENV.ASSIGNMENT_OVERRIDES;
@@ -645,6 +653,9 @@ define([
       var options = {
         addable: true
       };
+
+      limitTextInputFor($formQuestion, question_type);
+
       if (question_type == 'multiple_choice_question') {
       } else if (question_type == 'true_false_question') {
         options.addable = false;
@@ -901,7 +912,9 @@ define([
 
       $pickers.each(function() {
         var $field = $(this);
-        var formattedDate = Handlebars.helpers.datetimeFormatted($field.val() || '');
+        // remove the second 'false' argument once the pickers know how to
+        // parse localized datetimes
+        var formattedDate = Handlebars.helpers.datetimeFormatted($field.val() || '', false);
 
         $field.val(formattedDate);
         $field.datetime_field();
@@ -911,11 +924,11 @@ define([
         .on('xhrError', that.onFormError)
         .on('serializing', that.serialize);
 
-      $toggler.on('change', function() {
-        $options.toggle($toggler.is(':checked'));
-      }).triggerHandler('change');
-
       that.installValidators();
+    },
+
+    isOn: function() {
+      return correctAnswerVisibility.$toggler.prop('checked');
     },
 
     /**
@@ -1009,7 +1022,7 @@ define([
      * @param  {Object} data  The form/XHR data.
      */
     serialize: function(e, data) {
-      var show;
+      var showResults, showCorrectAnswers, showResultsOnce;
       var resetField = function(key, value) {
         data['quiz[' + key + ']'] = value || '';
       };
@@ -1025,16 +1038,28 @@ define([
         }
       };
 
-      show = data['quiz[hide_results][never]'] != '0';
-      show = show && data['quiz[show_correct_answers]'] == '1';
+      showResults = data['quiz[hide_results][never]'] != '0';
+      showCorrectAnswers = data['quiz[show_correct_answers]'] == '1';
+      showResultsOnce = data['quiz[one_time_results]'] == '1';
 
-      if (show) {
+      if (showResults && showCorrectAnswers) {
         serializeField('show_correct_answers_at');
         serializeField('hide_correct_answers_at');
       } else {
         resetField('show_correct_answers', '0');
+      }
+
+      // Discard the showAt / hideAt dates if we're showing results only once,
+      // or not at all:
+      if (!showResults || !showCorrectAnswers || showResultsOnce) {
         resetField('show_correct_answers_at');
         resetField('hide_correct_answers_at');
+      }
+
+      // One time results doesn't apply if results are hidden in the first
+      // place:
+      if (!showResults) {
+        resetField('one_time_results', '0');
       }
     },
 
@@ -1042,7 +1067,19 @@ define([
       var that = correctAnswerVisibility;
 
       that.$toggler.prop('checked', false);
-      that.$options.hide();
+      that.showDatePickers(false);
+    },
+
+    // Totally show or hide the showAt/hideAt date pickers
+    showDatePickers: function(isVisible) {
+      correctAnswerVisibility.$options.toggle(isVisible);
+    },
+
+    // Keep the pickers visible, but enable or disable them
+    enableDatePickers: function(isEnabled) {
+      correctAnswerVisibility.$options
+        .find('input, button')
+        .prop('disabled', !isEnabled);
     }
   };
 
@@ -1295,6 +1332,17 @@ define([
     return false;
   }
 
+  function limitTextInputFor(form, question_type) {
+    // Add character limit class
+    if (question_type == 'missing_word_question' ||
+        question_type == 'fill_in_multiple_blanks_question' ||
+        question_type == 'short_answer_question')  {
+      form.find("input[name='answer_text']").addClass("limit_text");
+    } else {
+      form.find("input[name='answer_text']").removeClass("limit_text");
+    }
+  }
+
   function parseFloatOrPercentage(val) {
     if (val == "") { return val; }
     var result;
@@ -1466,15 +1514,6 @@ define([
       }
     });
 
-    $("#never_hide_results").change(function() {
-      var $this = $(this);
-      $(".show_quiz_results_options").showIf($this.attr('checked'));
-      if (!$this.attr('checked')) {
-        $("#hide_results_only_after_last").attr('checked', false);
-        correctAnswerVisibility.disable();
-      }
-    }).triggerHandler('change');
-
     $("#quiz_one_question_at_a_time").change(function() {
       var $this = $(this);
       $("#one_question_at_a_time_options").showIf($this.attr('checked'));
@@ -1482,6 +1521,15 @@ define([
         $("#quiz_cant_go_back").attr('checked', false);
       }
     }).triggerHandler('change');
+
+    $(".question").on("change", ".limit_text", function() {
+      var answerValue = $(this).val();
+      var textLength = answerValue.length;
+      if(textLength > 80) {
+        alert(I18n.t('quiz_short_answer_length_error', 'Answers for fill in the blank questions must be under 80 characters long'));
+        $(this).val(answerValue.substring(0, 80));
+      }
+    });
 
     $("#multiple_attempts_option,#limit_attempts_option,#quiz_allowed_attempts").change(function() {
       var checked = $("#multiple_attempts_option").prop('checked') && $("#limit_attempts_option").prop('checked');
@@ -1529,6 +1577,9 @@ define([
         data['quiz[allowed_attempts]'] = attempts;
         overrideView.updateOverrides();
         var overrides = overrideView.getOverrides();
+        if (ENV.DIFFERENTIATED_ASSIGNMENTS_ENABLED) {
+          data['quiz[only_visible_to_overrides]'] = overrideView.containsSectionsWithoutOverrides();
+        }
         var quizData = overrideView.getDefaultDueDate();
         if (quizData) {
           quizData = quizData.toJSON().assignment_override;
@@ -1734,7 +1785,9 @@ define([
       if (isNaN(question.question_points)) { question.question_points = 0; }
       var $form = $("#question_form_template").clone(true).attr('id', '');
       var $formQuestion = $form.find(".question");
+      $formQuestion.addClass('initialLoad');
       $form.fillFormData(question);
+      $formQuestion.removeClass('initialLoad');
       addHTMLFeedback($form.find(".question_correct_comment"), question, 'correct_comments');
       addHTMLFeedback($form.find(".question_incorrect_comment"), question, 'incorrect_comments');
       addHTMLFeedback($form.find(".question_neutral_comment"), question, 'neutral_comments');
@@ -1742,6 +1795,7 @@ define([
       $formQuestion.addClass('selectable');
       $form.find(".answer_selection_type").change().show();
       if (question.question_type != 'missing_word_question') { $form.find("option.missing_word").remove(); }
+
       if ($question.hasClass('missing_word_question') || question.question_type == 'missing_word_question') {
         question = $question.getTemplateData({textValues: ['text_before_answers', 'text_after_answers']});
         answer_data = $question.find(".original_question_text").getFormData();
@@ -1821,6 +1875,9 @@ define([
       if ($question.hasClass('essay_question') || $question.hasClass('file_upload')) {
         $formQuestion.find(".comments_header").text(I18n.beforeLabel('comments_on_question', "Comments for this question"));
       }
+
+      limitTextInputFor($form, question.question_type);
+
       $question.hide().after($form);
       quiz.showFormQuestion($form);
       $form.attr('action', $question.find(".update_question_url").attr('href'))
@@ -1845,6 +1902,14 @@ define([
 
     $(".question_form :input[name='question_type']").change(function() {
       quiz.updateFormQuestion($(this).parents(".question_form"));
+
+      // is this the initial loado of the question type
+      var loading = $(this).parents(".question.initialLoad").length > 0;
+      var holder = $(this).parents('.question_holder');
+      var isNew = $(holder).find("#question_new").length > 0;
+      if ($("#student_submissions_warning").length > 0 && !loading && !isNew) {
+        disableRegrade(holder);
+      }
     });
 
     $("#question_form_template .cancel_link").click(function(event) {
@@ -1922,6 +1987,12 @@ define([
     });
 
     function showRegradeOptions($el,questionID) {
+      var holder = $el.parents('.question_holder');
+      var isNew = holder.find("#question_new").length > 0;
+      if (isNew) {
+        return;
+      }
+
       if (!canRegradeQuestion($el)) {
         return;
       }
@@ -1942,7 +2013,6 @@ define([
         var questionType = $el.find(".question_type").val();
 
         // regrade disabled if they remove an answer after submissions made
-        var holder = $el.parents('.question_holder');
         var disabled = holder.find('input[name="regrade_disabled"]').val() == '1';
 
         $el.find('.button-container').before(regradeTemplate({
@@ -1965,6 +2035,14 @@ define([
     }
 
     $(document).delegate(".regrade-options", 'click', clickRegradeOptions);
+
+    function disableRegrade(holder) {
+      holder.find('.regrade_enabled').hide();
+      holder.find('.regrade_disabled').show();
+      holder.find('input[name="regrade_option"]').attr('disabled', true);
+      holder.find('input[name="regrade_option"]').attr('checked', false);
+      holder.find('input[name="regrade_disabled"]').val('1');
+    }
 
     function clickRegradeOptions(event, disabled) {
       var checked = $('input[name="regrade_option"]:checked').length > 0;
@@ -2037,18 +2115,15 @@ define([
 
       // warn they can't regrade if there are submissions
       var disabled = regradeOpt.text() == 'disabled';
-      if ($("#student_submissions_warning").length > 0 && !disabled) {
+      var isNew = holder.find("#question_new").length > 0;
+      if ($("#student_submissions_warning").length > 0 && !disabled && !isNew) {
         var msg = I18n.t('confirms.delete_answer',
           "Are you sure? Deleting answers from a question with submissions " +
           "disables the option to regrade this question.")
         if (!confirm(msg)) { return; }
 
         // disabled regrade if they've chosen already
-        holder.find('.regrade_enabled').hide();
-        holder.find('.regrade_disabled').show();
-        holder.find('input[name="regrade_option"]').attr('disabled', true);
-        holder.find('input[name="regrade_option"]').attr('checked', false);
-        holder.find('input[name="regrade_disabled"]').val('1');
+        disableRegrade(holder);
         enableQuestionForm();
       }
 
@@ -3454,4 +3529,24 @@ define([
     toggler.toggle();
   });
 
+  $(function() {
+    $(document).on('change', function controlResultVisibilityFields() {
+      // "Let Students See Their Quiz Responses" related fields visibility:
+      if (isShowingResults()) {
+        $('.show_quiz_results_options').show();
+        // CA options:
+        // 
+        // What we'd like to do is show/hide the date-pickers based on the 
+        // "Let Students See The Correct Answers" option, and disable them
+        // if we're showing results just once ("Only Once After Each Attempt"):
+        correctAnswerVisibility.showDatePickers(correctAnswerVisibility.isOn());
+        correctAnswerVisibility.enableDatePickers(!isShowingResultsJustOnce());
+      } else {
+        correctAnswerVisibility.disable();
+        $('#quiz_one_time_results').prop('checked', false)
+        $('#hide_results_only_after_last').prop('checked', false);
+        $('.show_quiz_results_options').hide();
+      }
+    }).triggerHandler('change');
+  });
 });

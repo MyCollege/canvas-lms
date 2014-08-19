@@ -21,24 +21,14 @@ require 'spec_helper'
 describe LtiOutbound::LTIUser do
   it_behaves_like 'an LTI context'
 
-  it_behaves_like 'it has an attribute setter and getter for', :avatar_url
-  it_behaves_like 'it has an attribute setter and getter for', :email
-  it_behaves_like 'it has an attribute setter and getter for', :first_name
-  it_behaves_like 'it has an attribute setter and getter for', :last_name
-  it_behaves_like 'it has an attribute setter and getter for', :login_id
-  it_behaves_like 'it has an attribute setter and getter for', :current_roles
-  it_behaves_like 'it has an attribute setter and getter for', :concluded_roles
-  it_behaves_like 'it has an attribute setter and getter for', :currently_active_in_course
-
-  it_behaves_like 'it provides variable mapping', '$Canvas.user.id', :id
-  it_behaves_like 'it provides variable mapping', '$Canvas.user.loginId', :login_id
-  it_behaves_like 'it provides variable mapping', '$Canvas.user.sisSourceId', :sis_source_id
-  it_behaves_like 'it provides variable mapping', '$Canvas.enrollment.enrollmentState', :enrollment_state
-  it_behaves_like 'it provides variable mapping', '$Canvas.membership.concludedRoles', :concluded_roles
-  it_behaves_like 'it provides variable mapping', '$Person.name.full', :name
-  it_behaves_like 'it provides variable mapping', '$Person.name.family', :last_name
-  it_behaves_like 'it provides variable mapping', '$Person.name.given', :first_name
-  it_behaves_like 'it provides variable mapping', '$Person.address.timezone', :timezone
+  it_behaves_like 'it has a proc attribute setter and getter for', :avatar_url
+  it_behaves_like 'it has a proc attribute setter and getter for', :email
+  it_behaves_like 'it has a proc attribute setter and getter for', :first_name
+  it_behaves_like 'it has a proc attribute setter and getter for', :last_name
+  it_behaves_like 'it has a proc attribute setter and getter for', :login_id
+  it_behaves_like 'it has a proc attribute setter and getter for', :current_roles
+  it_behaves_like 'it has a proc attribute setter and getter for', :concluded_roles
+  it_behaves_like 'it has a proc attribute setter and getter for', :currently_active_in_course
 
   let(:teacher_role) { LtiOutbound::LTIRole::INSTRUCTOR }
   let(:learner_role) { LtiOutbound::LTIRole::LEARNER }
@@ -52,7 +42,13 @@ describe LtiOutbound::LTIUser do
       expect(subject.current_role_types).to eq("#{LtiOutbound::LTIRole::INSTRUCTOR},#{LtiOutbound::LTIRole::LEARNER}")
     end
 
-    it 'defaults if no roles exist' do
+    it 'defaults to NONE if no roles exist' do
+      expect(subject.current_role_types).to eq(LtiOutbound::LTIRole::NONE)
+    end
+
+    it 'defaults to NONE if roles are empty' do
+      subject.current_roles = []
+
       expect(subject.current_role_types).to eq(LtiOutbound::LTIRole::NONE)
     end
   end
@@ -68,6 +64,12 @@ describe LtiOutbound::LTIUser do
 
     it 'defaults if no roles exist' do
       expect(subject.concluded_role_types).to eq(LtiOutbound::LTIRole::NONE)
+    end
+
+    it 'defaults to NONE if roles are empty' do
+      subject.concluded_roles = []
+
+      expect(subject.current_role_types).to eq(LtiOutbound::LTIRole::NONE)
     end
   end
 

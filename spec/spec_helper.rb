@@ -26,12 +26,33 @@ if CANVAS_RAILS2
 end
 
 unless CANVAS_RAILS2
-  require 'timeout'
+  begin
+    require RUBY_VERSION >= '2.0.0' ? 'byebug' : 'debugger'
+  rescue LoadError
+  end
+
   RSpec.configure do |c|
+    c.treat_symbols_as_metadata_keys_with_true_values = true
+    c.color = true
+
     c.around(:each) do |example|
-      Timeout::timeout(300) {
-        example.run
-      }
+      attempts = 0
+      begin
+        Timeout::timeout(180) {
+          example.run
+        }
+        if ENV['AUTORERUN']
+          e = @example.instance_variable_get('@exception')
+          if !e.nil? && (attempts += 1) < 2 && !example.metadata[:no_retry]
+            puts "FAILURE: #{@example.description} \n #{e}".red
+            puts "RETRYING: #{@example.description}".yellow
+            @example.instance_variable_set('@exception', nil)
+            redo
+          elsif e.nil? && attempts != 0
+            puts "SUCCESS: retry passed for \n #{@example.description}".green
+          end
+        end
+      end until true
     end
   end
 end
@@ -104,6 +125,7 @@ else
         def render_with_helpers(*args)
           controller_class = ("#{@controller.controller_path.camelize}Controller".constantize rescue nil) || ApplicationController
 
+          controller_class.instance_variable_set(:@js_env, nil)
           # this extends the controller's helper methods to the view
           # however, these methods are delegated to the test controller
           view.singleton_class.class_eval do
@@ -178,6 +200,9 @@ require File.expand_path(File.dirname(__FILE__) + '/mocha_rspec_adapter')
 require File.expand_path(File.dirname(__FILE__) + '/mocha_extensions')
 require File.expand_path(File.dirname(__FILE__) + '/ams_spec_helper')
 
+require 'i18n_tasks'
+require 'handlebars_tasks'
+
 # if mocha was initialized before rails (say by another spec), CollectionProxy would have
 # undef_method'd them; we need to restore them
 unless CANVAS_RAILS2
@@ -185,7 +210,7 @@ unless CANVAS_RAILS2
     ActiveRecord::Associations::CollectionProxy.class_eval <<-RUBY
       def #{m}; end
       remove_method #{m.inspect}
-RUBY
+    RUBY
   end
 end
 
@@ -256,15 +281,6 @@ def truncate_all_tables
   end
 end
 
-def truncate_all_cassandra_tables
-  Canvas::Cassandra::DatabaseBuilder.config_names.each do |cass_config|
-    db = Canvas::Cassandra::DatabaseBuilder.from_config(cass_config)
-    db.tables.each do |table|
-      db.execute("TRUNCATE #{table}")
-    end
-  end
-end
-
 # wipe out the test db, in case some non-transactional tests crapped out before
 # cleaning up after themselves
 truncate_all_tables
@@ -297,6 +313,12 @@ Mocha::Mock.class_eval do
 
   def marshal_load(data)
     raise "Mocks aren't really serializeable!"
+  end
+
+  def to_yaml(opts = {})
+    YAML.quick_emit(self.object_id, opts) do |out|
+      out.scalar(nil, 'null')
+    end
   end
 
   def respond_to_with_marshalling?(symbol, include_private = false)
@@ -389,14 +411,51 @@ end
   config.use_instantiated_fixtures = false
   config.fixture_path = Rails.root+'spec/fixtures/'
 
-  ((config.debug = true) rescue nil) unless CANVAS_RAILS2
-
   config.include Helpers
 
+  if CANVAS_RAILS2
+    require 'spec/support/onceler/noop'
+    config.include Onceler::Noop
+
+    Onceler.instance_eval do
+      def self.base_transactions
+        1
+      end
+    end
+  else
+    config.include Onceler::BasicHelpers
+
+    # rspec 2+ only runs global before(:all)'s before the top-level
+    # groups, not before each nested one. so we need to reset some
+    # things to play nicely with its caching
+    Onceler.configure do |c|
+      c.before :record do
+        Account.clear_special_account_cache!
+        AdheresToPolicy::Cache.clear
+      end
+    end
+
+    Onceler.instance_eval do
+      # since once-ler creates potentially multiple levels of transaction
+      # nesting, we need a way to know the base level so we can compare it
+      # to AR::Conn#open_transactions. that will tell us if something is
+      # "committed" or not (from the perspective of the spec)
+      def base_transactions
+        # if not recording, it's presumed we're in a spec, in which case
+        # transactional fixtures add one more level
+        open_transactions + (recording? ? 0 : 1)
+      end
+    end
+  end
+
+  Notification.after_create { Notification.reset_cache! }
   config.before :all do
     # so before(:all)'s don't get confused
     Account.clear_special_account_cache!
-    Notification.after_create { Notification.reset_cache! }
+    AdheresToPolicy::Cache.clear
+
+    # allow tests to still run in non-draft state even though it's hard-coded on
+    Feature.definitions["draft_state"].send(:instance_variable_set, '@state', 'allowed')
   end
 
   def delete_fixtures!
@@ -404,21 +463,25 @@ end
     # in g/24755
   end
 
+  # UTC for tests, cuz it's easier :P
+  Account.time_zone_attribute_defaults[:default_time_zone] = 'UTC'
+
   config.before :each do
     I18n.locale = :en
     Time.zone = 'UTC'
     Account.clear_special_account_cache!
-    Account.default.update_attribute(:default_time_zone, 'UTC')
+    AdheresToPolicy::Cache.clear
     Setting.reset_cache!
+    ConfigFile.unstub
     HostUrl.reset_cache!
     Notification.reset_cache!
     ActiveRecord::Base.reset_any_instantiation!
     Attachment.clear_cached_mime_ids
     RoleOverride.clear_cached_contexts
     Delayed::Job.redis.flushdb if Delayed::Job == Delayed::Backend::Redis::Job
-    truncate_all_cassandra_tables
     Rails::logger.try(:info, "Running #{self.class.description} #{@method_name}")
     Attachment.domain_namespace = nil
+    $spec_api_tokens = {}
   end
 
   # flush redis before the first spec, and before each spec that comes after
@@ -499,17 +562,12 @@ end
     account = opts[:account] || Account.default
     @user = opts[:user] || account.shard.activate { user(opts) }
     @admin = @user
-    account_user = @user.account_users.build(:account => account, :membership_type => opts[:membership_type] || 'AccountAdmin')
-    account_user.shard = account.shard
-    account_user.save!
+    account.account_users.create!(:user => @user, :membership_type => opts[:membership_type])
     @user
   end
 
   def site_admin_user(opts={})
-    @user = opts[:user] || user(opts)
-    @admin = @user
-    Account.site_admin.add_user(@user, opts[:membership_type] || 'AccountAdmin')
-    @user
+    account_admin_user(opts.merge(account: Account.site_admin))
   end
 
   def user(opts={})
@@ -535,8 +593,6 @@ end
       cc.workflow_state = 'active' if opts[:active_cc] || opts[:active_all]
       cc.workflow_state = opts[:cc_state] if opts[:cc_state]
     end
-    @cc.should_not be_nil
-    @cc.should_not be_new_record
     @cc
   end
 
@@ -621,12 +677,12 @@ end
   end
 
   def student_in_section(section, opts={})
-    user
-    enrollment = section.course.enroll_user(@user, 'StudentEnrollment', :section => section)
-    @user.save!
+    student = opts.fetch(:user) { user }
+    enrollment = section.course.enroll_user(student, 'StudentEnrollment', :section => section)
+    student.save!
     enrollment.workflow_state = 'active'
     enrollment.save!
-    @user
+    student
   end
 
   def teacher_in_course(opts={})
@@ -662,6 +718,17 @@ end
     user_session(@user)
   end
 
+  def course_with_student_submissions(opts={})
+    course_with_teacher_logged_in(opts)
+    student_in_course
+    submission_count = opts[:submissions] || 1
+    submission_count.times do |s|
+      assignment = @course.assignments.create!(:title => "test #{s} assignment")
+      submission = assignment.submissions.create!(:assignment_id => assignment.id, :user_id => @student.id)
+      submission.update_attributes!(score: '5') if opts[:submission_points]
+    end
+  end
+
   def set_course_draft_state(enabled=true, opts={})
     course = opts[:course] || @course
     account = opts[:account] || course.account
@@ -695,9 +762,11 @@ end
     req_service = opts[:required_account_service] || nil
     roles = opts[:roles] || []
     message = opts[:message] || "hi there"
+    subj = opts[:subject] || "this is a subject"
     @account = opts[:account] || Account.default
-    @announcement = @account.announcements.build(message: message, required_account_service: req_service)
+    @announcement = @account.announcements.build(subject: subj, message: message, required_account_service: req_service)
     @announcement.start_at = opts[:start_at] || 5.minutes.ago.utc
+    @announcement.end_at = opts[:end_at] || 1.day.from_now.utc
     @announcement.account_notification_roles.build(roles.map { |r| {account_notification_id: @announcement.id, role_type: r} }) unless roles.empty?
     @announcement.save!
   end
@@ -761,14 +830,14 @@ end
 
   def user_session(user, pseudonym=nil)
     unless pseudonym
-      pseudonym = stub(:record => user, :user_id => user.id, :user => user, :login_count => 1)
+      pseudonym = stub('Pseudonym', :record => user, :user_id => user.id, :user => user, :login_count => 1)
       # at least one thing cares about the id of the pseudonym... using the
       # object_id should make it unique (but obviously things will fail if
       # it tries to load it from the db.)
       pseudonym.stubs(:id).returns(pseudonym.object_id)
     end
 
-    session = stub(:record => pseudonym, :session_credentials => nil, :used_basic_auth? => false)
+    session = stub('PseudonymSession', :record => pseudonym, :session_credentials => nil, :used_basic_auth? => false)
 
     PseudonymSession.stubs(:find).returns(session)
   end
@@ -809,7 +878,7 @@ end
     @quiz_submission = @quiz.generate_submission(@user)
     @quiz_submission.mark_completed
     @quiz_submission.submission_data = yield if block_given?
-    @quiz_submission.grade_submission
+    Quizzes::SubmissionGrader.new(@quiz_submission).grade_submission
   end
 
   def survey_with_submission(questions, &block)
@@ -836,7 +905,8 @@ end
     @group2 = course.groups.create!(:name => "group 2", :group_category => group_category)
 
     @topic = course.discussion_topics.build(:title => "topic")
-    @assignment = course.assignments.build(:submission_types => 'discussion_topic', :title => @topic.title, :group_category => @group1.group_category)
+    @topic.group_category = group_category
+    @assignment = course.assignments.build(:submission_types => 'discussion_topic', :title => @topic.title)
     @assignment.infer_times
     @assignment.saved_by = :discussion_topic
     @topic.assignment = @assignment
@@ -888,7 +958,7 @@ end
         :criteria => {
             "0" => {
                 :points => 3,
-                :mastery_points => 0,
+                :mastery_points => opts[:mastery_points] || 0,
                 :description => "Outcome row",
                 :long_description => @outcome.description,
                 :ratings => {
@@ -1024,11 +1094,10 @@ end
     update_with_protected_attributes!(ar_instance, attrs) rescue false
   end
 
-  def process_csv_data(*lines_or_opts)
-    account_model unless @account
-
-    lines = lines_or_opts.reject { |thing| thing.is_a? Hash }
-    opts = lines_or_opts.select { |thing| thing.is_a? Hash }.inject({:allow_printing => false}, :merge)
+  def process_csv_data(*lines)
+    opts = lines.extract_options!
+    opts.reverse_merge!(allow_printing: false)
+    account = opts[:account] || @account || account_model
 
     tmp = Tempfile.new("sis_rspec")
     path = "#{tmp.path}.csv"
@@ -1036,7 +1105,7 @@ end
     File.open(path, "w+") { |f| f.puts lines.flatten.join "\n" }
     opts[:files] = [path]
 
-    importer = SIS::CSV::Import.process(@account, opts)
+    importer = SIS::CSV::Import.process(account, opts)
 
     File.unlink path
 
@@ -1093,7 +1162,7 @@ end
 
   def stub_kaltura
     # trick kaltura into being activated
-    Kaltura::ClientV3.stubs(:config).returns({
+    CanvasKaltura::ClientV3.stubs(:config).returns({
                                                  'domain' => 'kaltura.example.com',
                                                  'resource_domain' => 'kaltura.example.com',
                                                  'partner_id' => '100',
@@ -1345,14 +1414,19 @@ end
     end
   end
 
+  # frd class, not a mock, so we can once-ler WebConferences (need to Marshal.dump)
+  class WebConferencePluginMock
+    attr_reader :id, :settings
+    def initialize(id, settings)
+      @id = id
+      @settings = settings
+    end
+    def valid_settings?; true; end
+    def enabled?; true; end
+    def base; end
+  end
   def web_conference_plugin_mock(id, settings)
-    mock = mock("WebConferencePlugin")
-    mock.stubs(:id).returns(id)
-    mock.stubs(:settings).returns(settings)
-    mock.stubs(:valid_settings?).returns(true)
-    mock.stubs(:enabled?).returns(true)
-    mock.stubs(:base).returns(nil)
-    mock
+    WebConferencePluginMock.new(id, settings)
   end
 
   def dummy_io
@@ -1392,7 +1466,7 @@ end
 
     @request_id = opts[:request_id] || RequestContextGenerator.request_id
     unless @request_id
-      @request_id = UUIDSingleton.instance.generate
+      @request_id = CanvasUUID.generate
       RequestContextGenerator.stubs(:request_id => @request_id)
     end
 
@@ -1419,6 +1493,42 @@ end
     @page_view.save!
     @page_view
   end
+
+  # a fast way to create a record, especially if you don't need the actual
+  # ruby object. since it just does a straight up insert, you need to
+  # provide any non-null attributes or things that would normally be
+  # inferred/defaulted prior to saving
+  def create_record(klass, attributes, return_type = :id)
+    create_records(klass, [attributes], return_type)[0]
+  end
+
+  # a little wrapper around bulk_insert that gives you back records or ids
+  # in order
+  # NOTE: if you decide you want to go add something like this to canvas
+  # proper, make sure you have it handle concurrent inserts (this does
+  # not, because READ COMMITTED is the default transaction isolation
+  # level)
+  def create_records(klass, records, return_type = :id)
+    return [] if records.empty?
+    klass.transaction do
+      klass.connection.bulk_insert klass.table_name, records
+      scope = klass.order("id DESC").limit(records.size)
+      return_type == :record ?
+        scope.all.reverse :
+        scope.pluck(:id).reverse
+    end
+  end
+end
+
+class String
+  def red; colorize(self, "\e[1m\e[31m"); end
+  def green; colorize(self, "\e[1m\e[32m"); end
+  def dark_green; colorize(self, "\e[32m"); end
+  def yellow; colorize(self, "\e[1m\e[33m"); end
+  def blue; colorize(self, "\e[1m\e[34m"); end
+  def dark_blue; colorize(self, "\e[34m"); end
+  def pur; colorize(self, "\e[1m\e[35m"); end
+  def colorize(text, color_code)  "#{color_code}#{text}\e[0m" end
 end
 
 Dir[Rails.root+'vendor/plugins/*/spec_canvas/spec_helper.rb'].each do |f|

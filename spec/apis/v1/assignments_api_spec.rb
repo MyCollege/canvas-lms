@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2011 Instructure, Inc.
+# Copyright (C) 2011 - 2014 Instructure, Inc.
 #
 # This file is part of Canvas.
 #
@@ -69,6 +69,25 @@ describe AssignmentsApiController, type: :request do
   end
 
   describe "GET /courses/:course_id/assignments (#index)" do
+
+    it "returns unauthorized for users who cannot :read the course" do
+      # unpublished course with invited student
+      course_with_student
+      @course.grants_right?(@student, :read).should be_false
+
+      api_call(:get,
+        "/api/v1/courses/#{@course.id}/assignments",
+        {
+          :controller => 'assignments_api',
+          :action => 'index',
+          :format => 'json',
+          :course_id => @course.id.to_s
+        },
+        {},
+        {},
+        {:expected_status => 401}
+      )
+    end
 
     it "sorts the returned list of assignments" do
       # the API returns the assignments sorted by
@@ -401,8 +420,60 @@ describe AssignmentsApiController, type: :request do
 
 
   describe "POST /courses/:course_id/assignments (#create)" do
-    it "allows authenticated users to create assignments" do
+
+    def create_assignment_json(group, group_category)
+      { 'name' => 'some assignment',
+        'position' => '1',
+        'points_possible' => '12',
+        'due_at' => '2011-01-01T00:00:00Z',
+        'lock_at' => '2011-01-03T00:00:00Z',
+        'unlock_at' => '2011-12-31T00:00:00Z',
+        'description' => 'assignment description',
+        'assignment_group_id' => group.id,
+        'submission_types' => [
+          'online_upload'
+        ],
+        'notify_of_update' => true,
+        'allowed_extensions' => [
+          'docx','ppt'
+        ],
+        'grade_group_students_individually' => true,
+        'automatic_peer_reviews' => true,
+        'peer_reviews' => true,
+        'peer_reviews_assign_at' => '2011-01-02T00:00:00Z',
+        'peer_review_count' => 2,
+        'group_category_id' => group_category.id,
+        'turnitin_enabled' => true,
+        'grading_type' => 'points',
+        'muted' => 'true'
+      }
+    end
+
+    before do
       course_with_teacher(:active_all => true)
+    end
+
+    it "returns unauthorized for users who do not have permission" do
+      student_in_course(:active_all => true)
+      @group = @course.assignment_groups.create!({:name => "some group"})
+      @group_category = @course.group_categories.create!(name: "foo")
+
+      @user = @student
+      api_call(:post,
+        "/api/v1/courses/#{@course.id}/assignments",
+        {
+          :controller => 'assignments_api',
+          :action => 'create',
+          :format => 'json',
+          :course_id => @course.id.to_s
+        },
+        create_assignment_json(@group, @group_category),
+        {},
+        {:expected_status => 401}
+      )
+    end
+
+    it "allows authenticated users to create assignments" do
       @course.assignment_groups.create!({:name => "first group"})
       @group = @course.assignment_groups.create!({:name => "some group"})
       @course.assignment_groups.create!({:name => "last group",
@@ -411,31 +482,7 @@ describe AssignmentsApiController, type: :request do
       @course.any_instantiation.expects(:turnitin_enabled?).
         at_least_once.returns true
       @json = api_create_assignment_in_course(@course,
-            { 'name' => 'some assignment',
-              'position' => '1',
-              'points_possible' => '12',
-              'due_at' => '2011-01-01',
-              'lock_at' => '2011-01-03',
-              'unlock_at' => '2011-12-31',
-              'description' => 'assignment description',
-              'assignment_group_id' => @group.id,
-              'submission_types' => [
-                'online_upload'
-              ],
-              'notify_of_update' => true,
-              'allowed_extensions' => [
-                'docx','ppt'
-              ],
-              'grade_group_students_individually' => true,
-              'automatic_peer_reviews' => true,
-              'peer_reviews' => true,
-              'peer_reviews_assign_at' => '2011-01-01',
-              'peer_review_count' => 2,
-              'group_category_id' => @group_category.id,
-              'turnitin_enabled' => true,
-              'grading_type' => 'points',
-              'muted' => 'true'
-            }
+        create_assignment_json(@group, @group_category)
        )
       @group_category.reload
       @assignment = Assignment.find @json['id']
@@ -478,19 +525,9 @@ describe AssignmentsApiController, type: :request do
       Assignment.count.should == 1
     end
 
-    def greater_than_255
-      <<-END
-        some really long assessment name...some really long assessment name...
-        some really long assessment name...some really long assessment name...
-        some really long assessment name...some really long assessment name...
-        some really long assessment name...some really long assessment name
-      END
-    end
-
     it "should not allow assignment titles longer than 255 characters" do
-      name_too_long = greater_than_255
-      course_with_teacher(:active_all => true)
-      #not create an assignment with a name too long
+      name_too_long = "a" * 256
+
       lambda{
         raw_api_call(:post,
           "/api/v1/courses/#{@course.id}/assignments.json",
@@ -506,34 +543,7 @@ describe AssignmentsApiController, type: :request do
       }.should_not change(Assignment, :count)
     end
 
-    it "should not allow updating an assignment title to longer than 255 characters" do
-      name_too_long = greater_than_255
-      course_with_teacher(:active_all => true)
-      #create an assignment
-      @json = api_create_assignment_in_course(@course, {'name' => 'some name'})
-      @assignment = Assignment.find @json['id']
-      @assignment.reload
-
-      #not update an assignment with a name too long
-      raw_api_call(
-        :put,
-        "/api/v1/courses/#{@course.id}/assignments/#{@assignment.id}.json",
-        {
-          :controller => 'assignments_api',
-          :action => 'update',
-          :format => 'json',
-          :course_id => @course.id.to_s,
-          :id => @assignment.id.to_s
-        },
-        { :assignment => { 'name' => name_too_long} }
-      )
-      assert_status(400)
-      @assignment.reload
-      @assignment.name.should == 'some name'
-    end
-
     it "does not allow modifying turnitin_enabled when not enabled on the context" do
-      course_with_teacher(:active_all => true)
       Course.any_instance.expects(:turnitin_enabled?).at_least_once.returns false
       response = api_create_assignment_in_course(@course,
             { 'name' => 'some assignment',
@@ -546,8 +556,6 @@ describe AssignmentsApiController, type: :request do
     end
 
     it "should process html content in description on create" do
-      course_with_teacher(:active_all => true)
-
       should_process_incoming_user_content(@course) do |content|
         api_create_assignment_in_course(@course, { 'description' => content })
 
@@ -558,7 +566,6 @@ describe AssignmentsApiController, type: :request do
     end
 
     it "allows creating an assignment with overrides via the API" do
-      course_with_teacher(:active_all => true)
       student_in_course(:course => @course, :active_enrollment => true)
 
       @adhoc_due_at = 5.days.from_now
@@ -602,7 +609,6 @@ describe AssignmentsApiController, type: :request do
 
     it "takes overrides into account in the assignment-created notification " +
       "for assignments created with overrides" do
-      course_with_teacher(:active_all => true)
       student_in_course(:course => @course, :active_enrollment => true)
       course_with_ta(:course => @course, :active_enrollment => true)
       @course.course_sections.create!
@@ -648,7 +654,6 @@ describe AssignmentsApiController, type: :request do
     end
 
     it "should not allow an assignment_group_id that is not a number" do
-      course_with_teacher(:active_all => true)
       student_in_course(:course => @course, :active_enrollment => true)
       @user = @teacher
 
@@ -669,10 +674,54 @@ describe AssignmentsApiController, type: :request do
         should == "must be a positive number"
     end
 
+    context "discussion topic assignments" do
+      it "should prevent creating assignments with group category IDs and discussions" do
+        course_with_teacher(:active_all => true)
+        group_category = @course.group_categories.create!(name: "foo")
+        raw_api_call(:post, "/api/v1/courses/#{@course.id}/assignments",
+          { :controller => 'assignments_api',
+            :action => 'create',
+            :format => 'json',
+            :course_id => @course.id.to_s },
+          { :assignment => {
+              'name' => 'some assignment',
+              'group_category_id' => group_category.id,
+              'submission_types' => [
+                 'discussion_topic'
+              ],
+              'discussion_topic' => {
+                'title' => 'some assignment'
+              }
+            }
+          })
+        response.code.should eql '400'
+      end
+    end
   end
 
-
   describe "PUT /courses/:course_id/assignments/:id (#update)" do
+
+    it "returns unauthorized for users who do not have permission" do
+      course_with_student(:active_all => true)
+      @assignment = @course.assignments.create!({
+        :name => "some assignment",
+        :points_possible => 15
+      })
+
+      api_call(:put,
+        "/api/v1/courses/#{@course.id}/assignments/#{@assignment.id}",
+        {
+          :controller => 'assignments_api',
+          :action => 'update',
+          :format => 'json',
+          :course_id => @course.id.to_s,
+          :id => @assignment.to_param
+        },
+        { 'points_possible' => 10 },
+        {},
+        {:expected_status => 401}
+      )
+    end
 
     it "should update published/unpublished" do
       course_with_teacher(:active_all => true)
@@ -716,6 +765,103 @@ describe AssignmentsApiController, type: :request do
         should == "Can't unpublish if there are student submissions"
     end
 
+    it "should 400 with invalid date times" do
+      course_with_teacher(:active_all => true)
+      the_date = 1.day.ago
+      @assignment = @course.assignments.create({
+        :name => "some assignment",
+        :points_possible => 15
+      })
+      @assignment.due_at = the_date
+      @assignment.lock_at = the_date
+      @assignment.unlock_at = the_date
+      @assignment.peer_reviews_assign_at = the_date
+      @assignment.save!
+      raw_api_update_assignment(@course, @assignment,
+                                {'peer_reviews_assign_at' => '1/1/2013' })
+      response.should_not be_success
+      response.code.should eql '400'
+      json = JSON.parse response.body
+      json['errors']['assignment[peer_reviews_assign_at]'].first['message'].
+        should == 'Invalid datetime for peer_reviews_assign_at'
+    end
+
+    it "should allow clearing dates" do
+      course_with_teacher(:active_all => true)
+      the_date = 1.day.ago
+      @assignment = @course.assignments.create({
+        :name => "some assignment",
+        :points_possible => 15
+      })
+      @assignment.due_at = the_date
+      @assignment.lock_at = the_date
+      @assignment.unlock_at = the_date
+      @assignment.peer_reviews_assign_at = the_date
+      @assignment.save!
+
+      api_update_assignment_call(@course, @assignment,
+                                 {'due_at' => nil,
+                                  'lock_at' => '',
+                                  'unlock_at' => nil,
+                                  'peer_reviews_assign_at' => nil })
+      response.should be_success
+      @assignment.reload
+
+      @assignment.due_at.should be_nil
+      @assignment.lock_at.should be_nil
+      @assignment.unlock_at.should be_nil
+      @assignment.peer_reviews_assign_at.should be_nil
+    end
+
+    it "should not allow updating an assignment title to longer than 255 characters" do
+      course_with_teacher(:active_all => true)
+      name_too_long = "a" * 256
+      #create an assignment
+      @json = api_create_assignment_in_course(@course, {'name' => 'some name'})
+      @assignment = Assignment.find @json['id']
+      @assignment.reload
+
+      #not update an assignment with a name too long
+      raw_api_call(
+        :put,
+        "/api/v1/courses/#{@course.id}/assignments/#{@assignment.id}.json",
+        {
+          :controller => 'assignments_api',
+          :action => 'update',
+          :format => 'json',
+          :course_id => @course.id.to_s,
+          :id => @assignment.id.to_s
+        },
+        { :assignment => { 'name' => name_too_long} }
+      )
+      assert_status(400)
+      @assignment.reload
+      @assignment.name.should == 'some name'
+    end
+
+    it "disallows updating deleted assignments" do
+      course_with_teacher(:active_all => true)
+      @assignment = @course.assignments.create!({
+        :name => "some assignment",
+        :points_possible => 15
+      })
+      @assignment.destroy
+
+      api_call(:put,
+        "/api/v1/courses/#{@course.id}/assignments/#{@assignment.id}",
+        {
+          :controller => 'assignments_api',
+          :action => 'update',
+          :format => 'json',
+          :course_id => @course.id.to_s,
+          :id => @assignment.to_param
+        },
+        { 'points_possible' => 10 },
+        {},
+        {:expected_status => 404}
+      )
+    end
+
     context "without overrides or frozen attributes" do
       before do
         course_with_teacher(:active_all => true)
@@ -745,8 +891,8 @@ describe AssignmentsApiController, type: :request do
           'grading_standard_id' => @new_grading_standard.id,
           'group_category_id' => nil,
           'description' => 'assignment description',
-          'grading_type' => 'points',
-          'due_at' => '2011-01-01',
+          'grading_type' => 'letter_grade',
+          'due_at' => '2011-01-01T00:00:00Z',
           'position' => 1,
           'muted' => true
         })
@@ -793,6 +939,15 @@ describe AssignmentsApiController, type: :request do
       end
 
       it "updates the assignment's grading_type" do
+        @assignment.grading_type.should == 'letter_grade'
+        @json['grading_type'].should == @assignment.grading_type
+      end
+
+      it "updates the assignments grading_type when outcome not provided" do
+        @json = api_update_assignment_call(@course,@assignment,{
+            'grading_type' => 'points'
+        })
+        @assignment.reload
         @assignment.grading_type.should == 'points'
         @json['grading_type'].should == @assignment.grading_type
       end
@@ -846,48 +1001,70 @@ describe AssignmentsApiController, type: :request do
       end
     end
 
-    context "when updating assignment overrides on the assignment" do
-      before do
-        course_with_teacher(:active_all => true)
-        student_in_course(:course => @course, :active_enrollment => true)
-        @assignment = @course.assignments.create!
-        @adhoc_due_at = 5.days.from_now
-        @section_due_at = 7.days.from_now
-        @user = @teacher
-        api_update_assignment_call(@course,@assignment,{
-          'name' => 'Assignment With Overrides',
-          'assignment_overrides' => {
-            '0' => {
-              'student_ids' => [@student.id],
-              'title' => 'adhoc override',
-              'due_at' => @adhoc_due_at.iso8601
-            },
-            '1' => {
-              'course_section_id' => @course.default_section.id,
-              'due_at' => @section_due_at.iso8601
+    context "with assignment overrides on the assignment" do
+      describe 'updating assignment overrides' do
+        before do
+          course_with_teacher(:active_all => true)
+          student_in_course(:course => @course, :active_enrollment => true)
+          @assignment = @course.assignments.create!
+          @adhoc_due_at = 5.days.from_now
+          @section_due_at = 7.days.from_now
+          @user = @teacher
+          api_update_assignment_call(@course,@assignment,{
+            'name' => 'Assignment With Overrides',
+            'assignment_overrides' => {
+              '0' => {
+                'student_ids' => [@student.id],
+                'title' => 'adhoc override',
+                'due_at' => @adhoc_due_at.iso8601
+              },
+              '1' => {
+                'course_section_id' => @course.default_section.id,
+                'due_at' => @section_due_at.iso8601
+              }
             }
+          })
+          @assignment.reload
+        end
+
+        it "updates any ADHOC overrides" do
+          @assignment.assignment_overrides.count.should == 2
+          @adhoc_override = @assignment.assignment_overrides.
+            find_by_set_type('ADHOC')
+          @adhoc_override.should_not be_nil
+          @adhoc_override.set.should == [@student]
+          @adhoc_override.due_at_overridden.should be_true
+          @adhoc_override.due_at.to_i.should == @adhoc_due_at.to_i
+        end
+
+        it "updates any CourseSection overrides" do
+          @section_override = @assignment.assignment_overrides.
+            find_by_set_type('CourseSection')
+          @section_override.should_not be_nil
+          @section_override.set.should == @course.default_section
+          @section_override.due_at_overridden.should be_true
+          @section_override.due_at.to_i.should == @section_due_at.to_i
+        end
+      end
+
+      describe "deleting all CourseSection overrides from assignment" do
+        it "works when :assignment_overrides key is nil" do
+          course_with_teacher(:active_all => true)
+          student_in_course(:course => @course, :active_all => true)
+          @assignment = @course.assignments.create!
+          Assignment.where(:id => @assignment).update_all(:created_at => Time.zone.now - 1.day)
+          @section_due_at = 7.days.from_now
+          @params = {
+            'name' => 'Assignment With Overrides',
+            'assignment_overrides' => {}
           }
-        })
-        @assignment.reload
-      end
+          @user = @teacher
 
-      it "updates any ADHOC overrides" do
-        @assignment.assignment_overrides.count.should == 2
-        @adhoc_override = @assignment.assignment_overrides.
-          find_by_set_type('ADHOC')
-        @adhoc_override.should_not be_nil
-        @adhoc_override.set.should == [@student]
-        @adhoc_override.due_at_overridden.should be_true
-        @adhoc_override.due_at.to_i.should == @adhoc_due_at.to_i
-      end
+          @params.has_key?('assignment_overrides').should be_true
 
-      it "updates any CourseSection overrides" do
-        @section_override = @assignment.assignment_overrides.
-          find_by_set_type('CourseSection')
-        @section_override.should_not be_nil
-        @section_override.set.should == @course.default_section
-        @section_override.due_at_overridden.should be_true
-        @section_override.due_at.to_i.should == @section_due_at.to_i
+          api_update_assignment_call(@course, @assignment, @params)
+          @assignment.assignment_overrides.active.count.should == 0
+        end
       end
     end
 
@@ -1068,6 +1245,158 @@ describe AssignmentsApiController, type: :request do
         @assignment.reload.only_visible_to_overrides.should == !@flag_before
       end
     end
+
+    context "when an admin tried to update a grading_standard" do
+      before(:each) do
+        @user = account_admin_user
+        course_with_teacher(:active_all => true, :user => @user)
+        @assignment = @course.assignments.create({:name => "some assignment"})
+        @assignment.save!
+        @account_standard = @course.account.grading_standards.create!(:title => "account standard", :standard_data => {:a => {:name => 'A', :value => '95'}, :b => {:name => 'B', :value => '80'}, :f => {:name => 'F', :value => ''}})
+        @course_standard = @course.grading_standards.create!(:title => "course standard", :standard_data => {:a => {:name => 'A', :value => '95'}, :b => {:name => 'B', :value => '80'}, :f => {:name => 'F', :value => ''}})
+      end
+
+      it "allows setting an account grading standard" do
+        raw_api_call(
+            :put,
+            "/api/v1/courses/#{@course.id}/assignments/#{@assignment.id}.json",
+            {
+                :controller => 'assignments_api',
+                :action => 'update',
+                :format => 'json',
+                :course_id => @course.id.to_s,
+                :id => @assignment.id.to_s
+            },
+            { :assignment => { :grading_standard_id => @account_standard.id } }
+        )
+        @assignment.reload
+        @assignment.grading_standard.should == @account_standard
+      end
+
+      it "allows setting a course level grading standard" do
+        raw_api_call(
+            :put,
+            "/api/v1/courses/#{@course.id}/assignments/#{@assignment.id}.json",
+            {
+                :controller => 'assignments_api',
+                :action => 'update',
+                :format => 'json',
+                :course_id => @course.id.to_s,
+                :id => @assignment.id.to_s
+            },
+            { :assignment => { :grading_standard_id => @course_standard.id } }
+        )
+        @assignment.reload
+        @assignment.grading_standard.should == @course_standard
+      end
+
+      it "should update a sub account level grading standard" do
+        sub_account = @course.account.sub_accounts.create!
+        c2 = sub_account.courses.create!
+        assignment2 = c2.assignments.create({:name => "some assignment"})
+        assignment2.save!
+        sub_account_standard = sub_account.grading_standards.create!(:title => "sub account standard", :standard_data => {:a => {:name => 'A', :value => '95'}, :b => {:name => 'B', :value => '80'}, :f => {:name => 'F', :value => ''}})
+        raw_api_call(
+            :put,
+            "/api/v1/courses/#{c2.id}/assignments/#{assignment2.id}.json",
+            {
+                :controller => 'assignments_api',
+                :action => 'update',
+                :format => 'json',
+                :course_id => c2.id.to_s,
+                :id => assignment2.id.to_s
+            },
+            { :assignment => { :grading_standard_id => sub_account_standard.id } }
+        )
+        assignment2.reload
+        assignment2.grading_standard.should == sub_account_standard
+      end
+
+      it "should not update grading standard from sub account not on account chain" do
+        sub_account = @course.account.sub_accounts.create!
+        sub_account2 = @course.account.sub_accounts.create!
+        c2 = sub_account.courses.create!
+        assignment2 = c2.assignments.create({:name => "some assignment"})
+        assignment2.save!
+        sub_account_standard = sub_account2.grading_standards.create!(:title => "sub account standard", :standard_data => {:a => {:name => 'A', :value => '95'}, :b => {:name => 'B', :value => '80'}, :f => {:name => 'F', :value => ''}})
+        raw_api_call(
+            :put,
+            "/api/v1/courses/#{c2.id}/assignments/#{assignment2.id}.json",
+            {
+                :controller => 'assignments_api',
+                :action => 'update',
+                :format => 'json',
+                :course_id => c2.id.to_s,
+                :id => assignment2.id.to_s
+            },
+            { :assignment => { :grading_standard_id => sub_account_standard.id } }
+        )
+        assignment2.reload
+        assignment2.grading_standard.should == nil
+      end
+
+      it "should not delete grading standard if invalid standard provided" do
+        @assignment.grading_standard = @account_standard
+        @assignment.save!
+        sub_account = @course.account.sub_accounts.create!
+        sub_account_standard = sub_account.grading_standards.create!(:title => "sub account standard", :standard_data => {:a => {:name => 'A', :value => '95'}, :b => {:name => 'B', :value => '80'}, :f => {:name => 'F', :value => ''}})
+        raw_api_call(
+            :put,
+            "/api/v1/courses/#{@course.id}/assignments/#{@assignment.id}.json",
+            {
+                :controller => 'assignments_api',
+                :action => 'update',
+                :format => 'json',
+                :course_id => @course.id.to_s,
+                :id => @assignment.id.to_s
+            },
+            { :assignment => { :grading_standard_id => sub_account_standard.id } }
+        )
+        @assignment.reload
+        @assignment.grading_standard.should == @account_standard
+      end
+
+      it "should remove a standard if empty value passed" do
+        @assignment.grading_standard = @account_standard
+        @assignment.save!
+        sub_account = @course.account.sub_accounts.create!
+        sub_account_standard = sub_account.grading_standards.create!(:title => "sub account standard", :standard_data => {:a => {:name => 'A', :value => '95'}, :b => {:name => 'B', :value => '80'}, :f => {:name => 'F', :value => ''}})
+        raw_api_call(
+            :put,
+            "/api/v1/courses/#{@course.id}/assignments/#{@assignment.id}.json",
+            {
+                :controller => 'assignments_api',
+                :action => 'update',
+                :format => 'json',
+                :course_id => @course.id.to_s,
+                :id => @assignment.id.to_s
+            },
+            { :assignment => { :grading_standard_id => nil } }
+        )
+        @assignment.reload
+        @assignment.grading_standard.should == nil
+      end
+    end
+
+    context "discussion topic assignments" do
+      it "should prevent setting group category ID on assignments with discussions" do
+        course_with_teacher(:active_all => true)
+        group_category = @course.group_categories.create!(name: "foo")
+        @assignment = factory_with_protected_attributes(
+          @course.assignments,
+          {
+            :title => 'assignment1',
+          })
+        @topic = @course.discussion_topics.build(assignment: @assignment, title: 'asdf')
+        @topic.save
+        raw_api_update_assignment(@course, @assignment, {
+          :group_category_id => group_category.id
+        })
+        @assignment.reload
+        @assignment.group_category.should be_nil
+        response.code.should eql '400'
+      end
+    end
   end
 
   describe "DELETE /courses/:course_id/assignments/:id (#delete)" do
@@ -1198,6 +1527,8 @@ describe AssignmentsApiController, type: :request do
           'attachments' => [],
           'permissions' => {'delete' => true, 'attach' => true, 'update' => true},
           'discussion_type' => 'side_comment',
+          'group_category_id' => nil,
+          'can_group' => true,
         }
       end
 
@@ -1221,7 +1552,7 @@ describe AssignmentsApiController, type: :request do
                    :format => 'json',
                    :course_id => @course.id.to_s
                  })
-        mod.evaluate_for(@user, true).should be_unlocked
+        mod.evaluate_for(@user).should be_unlocked
 
         # show should count as a view
         json = api_get_assignment_in_course(@assignment,@course)
@@ -1294,7 +1625,7 @@ describe AssignmentsApiController, type: :request do
         mod.save!
         json = api_get_assignment_in_course(@assignment,@course)
         json['description'].should be_nil
-        mod.evaluate_for(@user, true).should be_unlocked
+        mod.evaluate_for(@user).should be_unlocked
       end
 
       it "includes submission info when requested with include flag" do
@@ -1510,6 +1841,30 @@ describe AssignmentsApiController, type: :request do
       it "does not contain a turnitin_enabled key" do
         result.has_key?('turnitin_enabled').should == false
       end
+    end
+  end
+
+  context "update_from_params" do
+    before do
+      course_with_teacher(:active_all => true)
+      @assignment = @course.assignments.create!(:title => "some assignment")
+    end
+
+    it "does not update integration_data when lacking permission" do
+      json = %{{"key": "value"}}
+      params = {"integration_data" => json}
+
+      update_from_params(@assignment, params, @user)
+      @assignment.integration_data.should == nil
+    end
+
+    it "updates integration_data with permission" do
+      json = %{{"key": "value"}}
+      params = {"integration_data" => json}
+      account_admin_user_with_role_changes(
+        :role_changes => {:manage_sis => true})
+      update_from_params(@assignment, params, @admin)
+      @assignment.integration_data.should == {"key" => "value"}
     end
   end
 end

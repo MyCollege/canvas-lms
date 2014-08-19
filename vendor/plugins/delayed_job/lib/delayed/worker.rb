@@ -47,6 +47,21 @@ class Worker
     @max_job_count = options[:worker_max_job_count].to_i
     @max_memory_usage = options[:worker_max_memory_usage].to_i
     @job_count = 0
+
+    if CANVAS_RAILS3
+      app = Rails.application
+      unless app.config.cache_classes
+        Delayed::Worker.lifecycle.around(:perform) do |&block|
+          reload = app.config.reload_classes_only_on_change != true || app.reloaders.map(&:updated?).any?
+          ActionDispatch::Reloader.prepare! if reload
+          begin
+            block.call
+          ensure
+            ActionDispatch::Reloader.cleanup! if reload
+          end
+        end
+      end
+    end
   end
 
   def name=(name)
@@ -93,11 +108,14 @@ class Worker
     @sleep_delay_stagger ||= Setting.get('delayed_jobs_sleep_delay_stagger', '2.5').to_f
     @make_tmpdir ||= Setting.get('delayed_jobs_unique_tmpdir', 'true') == 'true'
 
-    job = Delayed::Job.get_and_lock_next_available(
-      name,
-      queue,
-      min_priority,
-      max_priority)
+    job =
+        self.class.lifecycle.run_callbacks(:pop, self) do
+          Delayed::Job.get_and_lock_next_available(
+            name,
+            queue,
+            min_priority,
+            max_priority)
+        end
 
     if job
       configure_for_job(job) do
@@ -134,7 +152,7 @@ class Worker
         if job.batch?
           # each job in the batch will have perform called on it, so we don't
           # need a timeout around this 
-          count = perform_batch(job.payload_object)
+          count = perform_batch(job)
         else
           job.invoke_job
         end
@@ -151,9 +169,11 @@ class Worker
     count
   end
 
-  def perform_batch(batch)
+  def perform_batch(parent_job)
+    batch = parent_job.payload_object
     if batch.mode == :serial
       batch.jobs.each do |job|
+        job.source = parent_job.source
         job.create_and_lock!(name)
         configure_for_job(job) do
           ensure_db_connection

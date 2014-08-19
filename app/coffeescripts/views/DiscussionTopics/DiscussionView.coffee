@@ -6,7 +6,8 @@ define [
   'jst/DiscussionTopics/discussion'
   'compiled/views/PublishIconView'
   'compiled/views/ToggleableSubscriptionIconView'
-], (I18n, $, _, {View}, template, PublishIconView, ToggleableSubscriptionIconView) ->
+  'compiled/views/MoveDialogView'
+], (I18n, $, _, {View}, template, PublishIconView, ToggleableSubscriptionIconView, MoveDialogView) ->
 
   class DiscussionView extends View
     # Public: View template (discussion).
@@ -38,6 +39,7 @@ define [
     els:
       '.screenreader-only': '$title'
       '.discussion-row': '$row'
+      '.move_item': '$moveItemButton'
       '.discussion-actions .al-trigger': '$gearButton'
 
     # Public: Topic is able to be locked/unlocked.
@@ -54,11 +56,17 @@ define [
       @attachModel()
       options.publishIcon = new PublishIconView(model: @model) if ENV.permissions.publish
       options.toggleableSubscriptionIcon = new ToggleableSubscriptionIconView(model: @model)
+      @moveItemView = new MoveDialogView
+        model: @model
+        nested: true
+        closeTarget: @$el.find('a[id=manage_link]')
+        saveURL: -> @model.collection.reorderURL()
       super
 
     render: ->
       super
       @$el.attr('data-id', @model.get('id'))
+      @moveItemView.setTrigger @$moveItemButton
       this
 
     # Public: Lock or unlock the model and update it on the server.
@@ -81,7 +89,11 @@ define [
     # Returns nothing.
     onDelete: (e) =>
       e.preventDefault()
-      @delete() if confirm(@messages.confirm)
+      if confirm(@messages.confirm)
+        @goToPrevItem()
+        @delete()
+      else
+        @$el.find('a[id=manage_link]').focus()
 
     # Public: Delete the model and update the server.
     #
@@ -89,6 +101,20 @@ define [
     delete: ->
       @model.destroy()
       @$el.remove()
+
+    goToPrevItem: =>
+      if @previousDiscussionInGroup()?
+        $('#' + @previousDiscussionInGroup().id + '_discussion_content').attr("tabindex",-1).focus()
+      else if @model.get('pinned')
+        $('.pinned&.discussion-list').attr("tabindex",-1).focus()
+      else if @model.get('locked')
+        $('.locked&.discussion-list').attr("tabindex",-1).focus()
+      else
+        $('.open&.discussion-list').attr("tabindex",-1).focus()
+
+    previousDiscussionInGroup: =>
+      current_index = @model.collection.models.indexOf(@model)
+      @model.collection.models[current_index - 1]
 
     # Public: Pin or unpin the model and update it on the server.
     #

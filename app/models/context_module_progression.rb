@@ -21,19 +21,21 @@ class ContextModuleProgression < ActiveRecord::Base
   attr_accessible :context_module, :user
   belongs_to :context_module
   belongs_to :user
-  
-  before_save :infer_defaults
+  before_save :set_completed_at
+
+  EXPORTABLE_ATTRIBUTES = [:id, :context_module_id, :user_id, :requirements_met, :workflow_state, :created_at, :updated_at, :collapsed, :current_position, :completed_at]
+  EXPORTABLE_ASSOCIATIONS = [:context_module, :user]
+
   after_save :touch_user
-  after_save :trigger_completion_events
   
-  serialize :requirements_met
+  serialize :requirements_met, Array
 
   def completion_requirements
     context_module.try(:completion_requirements) || []
   end
   private :completion_requirements
   
-  def infer_defaults
+  def set_completed_at
     if self.completed?
       self.completed_at ||= Time.now
     else
@@ -96,7 +98,7 @@ class ContextModuleProgression < ActiveRecord::Base
       requirements_met << req
     end
 
-    def other_requirement_met?(req)
+    def any_requirement_met?(req)
       met = requirements_met.any? {|r| r[:id] == req[:id] }
       @started = true if met
       met
@@ -108,7 +110,7 @@ class ContextModuleProgression < ActiveRecord::Base
 
     def check_view_requirements
       view_requirements.each do |req|
-        requirement_met(req, other_requirement_met?(req))
+        requirement_met(req, any_requirement_met?(req))
       end
     end
   end
@@ -182,47 +184,64 @@ class ContextModuleProgression < ActiveRecord::Base
   def evaluate_score_requirement_met(requirement, tag)
     score = get_submission_score(tag)
     if requirement[:type] == "max_score"
-      !!score && score <= requirement[:max_score].to_f
+      score.present? && score <= requirement[:max_score].to_f
     else
-      !!score && score >= requirement[:min_score].to_f
+      score.present? && score >= requirement[:min_score].to_f
     end
   end
   private :evaluate_score_requirement_met
 
-  def mark_as_dirty
-    self.workflow_state = 'locked'
-    nil
+  def update_requirement_met(action, tag, points=nil)
+    requirement = context_module.completion_requirement_for(action, tag)
+    return nil unless requirement
+
+    requirement_met = true
+    requirement_met = points && points >= requirement[:min_score].to_f if requirement[:type] == 'min_score'
+    requirement_met = points && points <= requirement[:max_score].to_f if requirement[:type] == 'max_score'
+    if !requirement_met
+      self.requirements_met.delete(requirement)
+      self.mark_as_outdated
+    elsif !self.requirements_met.include?(requirement)
+      self.requirements_met.push(requirement)
+      self.mark_as_outdated
+    end
+    requirement
   end
 
-  def mark_as_dirty!
-    mark_as_dirty
+  def mark_as_outdated
+    self.current = false
+  end
+
+  def mark_as_outdated!
+    self.mark_as_outdated
     Shackles.activate(:master) do
-      self.save if self.workflow_state_changed?
+      self.save
     end
-    nil
+  end
+
+  def outdated?
+    if self.current && evaluated_at.present?
+      # context module not locked or still to be unlocked
+      return false if context_module.unlock_at.blank? || context_module.to_be_unlocked
+
+      # evaluated before unlock time
+      return evaluated_at < context_module.unlock_at
+    end
+
+    true
   end
 
   def self.prerequisites_satisfied?(user, context_module)
-    unlocked = (context_module.active_prerequisites || []).all? do |pre|
-      if pre[:type] == 'context_module'
-        prog = user.module_progression_for(pre[:id])
-        if prog
-          prog.completed?
-        elsif pre[:id].present?
-          if prereq = context_module.context.context_modules.active.find_by_id(pre[:id])
-            prog = prereq.evaluate_for(user, true)
-            prog.completed?
-          else
-            true
-          end
-        else
-          true
-        end
+    related_progressions = nil
+    (context_module.active_prerequisites || []).all? do |pre|
+      related_progressions ||= ContextModuleProgressions::Finder.find_or_create_for_module_and_user(context_module, user).index_by(&:context_module_id)
+      if pre[:type] == 'context_module' && progression = related_progressions[pre[:id]]
+        progression.evaluate!(context_module)
+        progression.completed?
       else
         true
       end
     end
-    unlocked
   end
 
   def prerequisites_satisfied?
@@ -255,32 +274,84 @@ class ContextModuleProgression < ActiveRecord::Base
   end
   private :evaluate_current_position
 
-  def evaluate(force_evaluate_requirements)
-    # there is no valid progression state for unpublished modules
-    return mark_as_dirty! if context_module.unpublished?
+  # attempts to calculate and save the progression state
+  # will not raise a StaleObjectError if there is a conflict
+  # may reload the object and may return stale data (if there is a conflict)
+  def evaluate!(as_prerequisite_for=nil)
+    retry_count = 0
+    begin
+      evaluate(as_prerequisite_for)
+    rescue ActiveRecord::StaleObjectError
+      # retry up to five times, otherwise return current (stale) data
+      self.reload
+      retry_count += 1
+      retry if retry_count < 5
 
-    if force_evaluate_requirements || self.new_record? || self.updated_at < context_module.updated_at || User.module_progression_jobs_queued?(user.id)
-      self.requirements_met ||= []
-      self.workflow_state = 'locked'
-      if check_prerequisites
-        evaluate_requirements_met
-      end
+      logger.error { "Failed to evaluate stale progression: #{self.inspect}" }
     end
+
+    self
+  end
+
+  # calculates and saves the progression state
+  # raises a StaleObjectError if there is a conflict
+  def evaluate(as_prerequisite_for=nil)
+    return self unless outdated?
+
+    # there is no valid progression state for unpublished modules
+    return self if context_module.unpublished?
+
+    self.evaluated_at = Time.now.utc
+    self.current = true
+    self.requirements_met ||= []
+    self.workflow_state = 'locked'
+
+    if check_prerequisites
+      evaluate_requirements_met
+    end
+    completion_changed = self.workflow_state_changed? && self.workflow_state_change.include?('completed')
 
     evaluate_current_position
 
     Shackles.activate(:master) do
-      self.save if self.changed?
+      self.save
     end
+
+    if completion_changed
+      trigger_reevaluation_of_dependent_progressions(as_prerequisite_for)
+      trigger_completion_events if self.completed?
+    end
+
+    self
   end
 
-  def trigger_completion_events
-    if workflow_state_changed? && completed?
-      context_module.completion_event_callbacks.each do |event|
-        event.call(user)
+  def trigger_reevaluation_of_dependent_progressions(dependent_module_to_skip=nil)
+    progressions = ContextModuleProgressions::Finder.find_or_create_for_module_and_user(context_module, user)
+
+    # only recalculate progressions related to this module as a prerequisite
+    progressions = progressions.select do |progression|
+      # re-evaluating progressions that have requested our progression's evaluation can cause cyclic evaluation
+      next false if dependent_module_to_skip && progression.context_module_id == dependent_module_to_skip.id
+
+      (progression.context_module.prerequisites || []).any? do |prereq|
+        prereq[:type] == 'context_module' && prereq[:id] == context_module.id
       end
     end
+
+    # invalidate all, then re-evaluate each
+    progressions.each(&:mark_as_outdated!)
+    progressions.each do |progression|
+      progression.send_later_if_production(:evaluate!, self)
+    end
   end
+  private :trigger_reevaluation_of_dependent_progressions
+
+  def trigger_completion_events
+    context_module.completion_event_callbacks.each do |event|
+      event.call(user)
+    end
+  end
+  private :trigger_completion_events
 
   scope :for_user, lambda { |user| where(:user_id => user) }
   scope :for_modules, lambda { |mods| where(:context_module_id => mods) }

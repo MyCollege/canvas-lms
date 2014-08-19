@@ -24,7 +24,7 @@ describe UsersController do
     before :each do
       @a = Account.default
       @u = user(:active_all => true)
-      @a.add_user(@u)
+      @a.account_users.create!(user: @u)
       user_session(@user)
       @t1 = @a.default_enrollment_term
       @t2 = @a.enrollment_terms.create!(:name => 'Term 2')
@@ -58,6 +58,53 @@ describe UsersController do
     it "should filter account users by term - term 2" do
       get 'index', :account_id => @a.id, :enrollment_term_id => @t2.id
       assigns[:users].map(&:id).sort.should == [@e2.user, @c2.teachers.first].map(&:id).sort
+    end
+  end
+
+  describe "GET oauth" do
+    it "sets up oauth for facebook" do
+      Facebook::Connection.config = Proc.new do
+        {}
+      end
+      CanvasSlug.stubs(:generate).returns("some_uuid")
+
+      user_with_pseudonym
+      user_session(@user)
+
+      OauthRequest.expects(:create).with(
+          :service => "facebook",
+          :secret => "some_uuid",
+          :return_url => "http://example.com",
+          :user => @user,
+          :original_host_with_port => "test.host"
+      ).returns(stub(global_id: "123"))
+      Facebook::Connection.expects(:authorize_url).returns("http://example.com/redirect")
+
+      get :oauth, {service: "facebook", return_to: "http://example.com"}
+
+      response.should redirect_to "http://example.com/redirect"
+    end
+  end
+
+  describe "GET oauth_success" do
+    it "handles facebook post oauth redirects" do
+
+      user_with_pseudonym
+      user_session(@user)
+
+
+      Canvas::Security.expects(:decrypt_password).with("some", "state", 'facebook_oauth_request').returns("123")
+      mock_oauth_request = stub(original_host_with_port: "test.host", user: @user, return_url: "example.com")
+      OauthRequest.expects(:find_by_id).with("123").returns(mock_oauth_request)
+      Facebook::Connection.expects(:get_service_user_info).with("access_token").returns({"id" => "456", "name" => "joe", "link" => "some_link"})
+      UserService.any_instance.expects(:save) do |user_service|
+        user_service.id.should == "456"
+        user_service.name.should == "joe"
+        user_service.link.should == "some_link"
+      end
+
+      get :oauth_success, state: "some.state", service: "facebook", access_token: "access_token"
+
     end
   end
 
@@ -218,9 +265,16 @@ describe UsersController do
 
         it "should allow observers to self register" do
           user_with_pseudonym(:active_all => true, :password => 'lolwut')
+          course_with_student(:user => @user, :active_all => true)
 
           post 'create', :pseudonym => { :unique_id => 'jane@example.com' }, :observee => { :unique_id => @pseudonym.unique_id, :password => 'lolwut' }, :user => { :name => 'Jane Observer', :terms_of_use => '1', :initial_enrollment_type => 'observer' }, :format => 'json'
           response.should be_success
+          new_pseudo = Pseudonym.find_by_unique_id('jane@example.com')
+          new_user = new_pseudo.user
+          new_user.observed_users.should == [@user]
+          oe = new_user.observer_enrollments.first
+          oe.course.should == @course
+          oe.associated_user.should == @user
         end
 
         it "should redirect 'new' action to root_url" do
@@ -395,7 +449,7 @@ describe UsersController do
 
         before do
           user_with_pseudonym(:account => account)
-          account.add_user(@user)
+          account.account_users.create!(user: @user)
           user_session(@user, @pseudonym)
         end
 
@@ -450,7 +504,7 @@ describe UsersController do
       it "should notify the user if a merge opportunity arises" do
         account = Account.create!
         user_with_pseudonym(:account => account)
-        account.add_user(@user)
+        account.account_users.create!(user: @user)
         user_session(@user, @pseudonym)
         @admin = @user
 
@@ -467,7 +521,7 @@ describe UsersController do
 
         account = Account.create!
         user_with_pseudonym(:account => account)
-        account.add_user(@user)
+        account.account_users.create!(user: @user)
         user_session(@user, @pseudonym)
         @admin = @user
 
@@ -673,7 +727,7 @@ describe UsersController do
     end
 
     describe 'as site admin' do
-      before { Account.site_admin.add_user(@admin) }
+      before { Account.site_admin.account_users.create!(user: @admin) }
 
       it 'warns about merging a user with itself' do
         user = User.create!
@@ -701,7 +755,23 @@ describe UsersController do
     context "sharding" do
       specs_require_sharding
 
-      it "should include enrollments from all shards" do
+      it "should include enrollments from all shards for the actual user" do
+        course_with_teacher(:active_all => 1)
+        @shard1.activate do
+          account = Account.create!
+          course = account.courses.create!
+          @e2 = course.enroll_teacher(@teacher)
+        end
+        account_admin_user(:user => @teacher)
+        user_session(@teacher)
+
+        get 'show', :id => @teacher.id
+        response.should be_success
+        assigns[:enrollments].sort_by(&:id).should == [@enrollment, @e2]
+      end
+
+      it "should include enrollments from all shards for trusted account admins" do
+        pending "granting read permissions to trusted accounts"
         course_with_teacher(:active_all => 1)
         @shard1.activate do
           account = Account.create!
@@ -709,12 +779,27 @@ describe UsersController do
           @e2 = course.enroll_teacher(@teacher)
         end
         account_admin_user
-        user_session(@admin)
+        user_session(@user)
 
         get 'show', :id => @teacher.id
         response.should be_success
         assigns[:enrollments].sort_by(&:id).should == [@enrollment, @e2]
       end
+    end
+
+    it "should not let admins see enrollments from other accounts" do
+      @enrollment1 = course_with_teacher(:active_all => 1)
+      @enrollment2 = course_with_teacher(:active_all => 1, :user => @user)
+
+      other_root_account = Account.create!(:name => 'other')
+      @enrollment3 = course_with_teacher(:active_all => 1, :user => @user, :account => other_root_account)
+
+      account_admin_user
+      user_session(@admin)
+
+      get 'show', :id => @teacher.id
+      response.should be_success
+      assigns[:enrollments].sort_by(&:id).should == [@enrollment1, @enrollment2]
     end
 
     it "should respond to JSON request" do
@@ -737,7 +822,7 @@ describe UsersController do
       PageView.stubs(:page_view_method).returns(:db)
       user_with_pseudonym
       admin = @user
-      Account.site_admin.add_user(admin)
+      Account.site_admin.account_users.create!(user: admin)
       user_session(admin)
       @shard1.activate do
         account = Account.create!
@@ -769,7 +854,7 @@ describe UsersController do
     it "should not associate the user with target user's shard for non-db page views" do
       user_with_pseudonym
       admin = @user
-      Account.site_admin.add_user(admin)
+      Account.site_admin.account_users.create!(user: admin)
       user_session(admin)
       @shard1.activate do
         account = Account.create!
@@ -779,6 +864,88 @@ describe UsersController do
         response.should be_redirect
 
         admin.associated_shards(:shadow).should_not be_include(@shard1)
+      end
+    end
+  end
+
+  describe "oauth_success" do
+    it "should use the access token to get user info" do
+
+      user_with_pseudonym
+      admin = @user
+      user_session(admin)
+
+      mock_oauth_request = stub(token: 'token', secret: 'secret', original_host_with_port: 'test.host', user: @user, return_url: '/')
+      OauthRequest.expects(:find_by_token_and_service).with('token', 'google_docs').returns(mock_oauth_request)
+
+      mock_access_token = stub(token: '123', secret: 'abc')
+      GoogleDocs::Connection.expects(:get_access_token).with('token', 'secret', 'oauth_verifier').returns(mock_access_token)
+      mock_google_docs = stub()
+      GoogleDocs::Connection.expects(:new).with('token', 'secret').returns(mock_google_docs)
+      mock_google_docs.expects(:get_service_user_info).with(mock_access_token)
+
+      get 'oauth_success', {oauth_token: 'token', service: 'google_docs', oauth_verifier: 'oauth_verifier'}, {host_with_port: 'test.host'}
+    end
+  end
+
+  describe 'GET media_download' do
+    let(:kaltura_client) do
+      kaltura_client = mock('CanvasKaltura::ClientV3').responds_like_instance_of(CanvasKaltura::ClientV3)
+      CanvasKaltura::ClientV3.stubs(:new).returns(kaltura_client)
+      kaltura_client
+    end
+
+    let(:media_source_fetcher) {
+      media_source_fetcher = mock('MediaSourceFetcher').responds_like_instance_of(MediaSourceFetcher)
+      MediaSourceFetcher.expects(:new).with(kaltura_client).returns(media_source_fetcher)
+      media_source_fetcher
+    }
+
+    before do
+      account = Account.create!
+      course_with_student(:active_all => true, :account => account)
+      user_session(@student)
+    end
+
+    it 'should pass type and media_type params down to the media fetcher' do
+      media_source_fetcher.expects(:fetch_preferred_source_url).
+        with(media_id: 'someMediaId', file_extension: 'mp4', media_type: 'video').
+        returns('http://example.com/media.mp4')
+
+      get 'media_download', user_id: @student.id, entryId: 'someMediaId', type: 'mp4', media_type: 'video'
+    end
+
+    context 'when redirect is set to 1' do
+      it 'should redirect to the url' do
+        media_source_fetcher.stubs(:fetch_preferred_source_url).
+          returns('http://example.com/media.mp4')
+
+        get 'media_download', user_id: @student.id, entryId: 'someMediaId', type: 'mp4', redirect: '1'
+
+        response.should redirect_to 'http://example.com/media.mp4'
+      end
+    end
+
+    context 'when redirect does not equal 1' do
+      it 'should render the url in json' do
+        media_source_fetcher.stubs(:fetch_preferred_source_url).
+          returns('http://example.com/media.mp4')
+
+        get 'media_download', user_id: @student.id, entryId: 'someMediaId', type: 'mp4'
+
+        json_parse['url'].should == 'http://example.com/media.mp4'
+      end
+    end
+
+    context 'when asset is not found' do
+      it 'should render a 404 and error message' do
+        media_source_fetcher.stubs(:fetch_preferred_source_url).
+          returns(nil)
+
+        get 'media_download', user_id: @student.id, entryId: 'someMediaId', type: 'mp4'
+
+        response.code.should == '404'
+        response.body.should == 'Could not find download URL'
       end
     end
   end

@@ -102,28 +102,6 @@ describe Submission do
     end
   end
 
-  it "should not return duplicate conversation groups" do
-    assignment_model
-    @assignment.workflow_state = 'published'
-    @assignment.save!
-    section1 = @course.course_sections.create(name: '1')
-    section2 = @course.course_sections.create(name: '2')
-    section3 = @course.course_sections.create(name: '3')
-    section4 = @course.course_sections.create(name: '4')
-    section5 = @course.course_sections.create(name: '5')
-    section1.enroll_user(@teacher, 'TeacherEnrollment', 'accepted')
-    section2.enroll_user(@teacher, 'TeacherEnrollment', 'accepted')
-    section3.enroll_user(@teacher, 'TeacherEnrollment', 'accepted')
-    section4.enroll_user(@teacher, 'TeacherEnrollment', 'invited')
-    section5.enroll_user(@teacher, 'TeacherEnrollment', 'completed')
-    @course.offer!
-    @course.enroll_student(@student = user)
-    @assignment.context.reload
-
-    @submission = @assignment.submit_homework(@student, :body => 'some message')
-    @submission.conversation_groups.should eql @submission.conversation_groups.uniq
-  end
-
   it "should ensure the media object exists" do
     assignment_model
     se = @course.enroll_student(user)
@@ -297,11 +275,11 @@ describe Submission do
         user       = account_admin_user
         channel    = user.communication_channels.create!(:path => 'admin@example.com')
         submission = quiz.generate_submission(user, false)
-        submission.grade_submission
+        Quizzes::SubmissionGrader.new(submission).grade_submission
 
         channel2   = @teacher.communication_channels.create!(:path => 'chang@example.com')
         submission2 = quiz.generate_submission(@teacher, false)
-        submission2.grade_submission
+        Quizzes::SubmissionGrader.new(submission2).grade_submission
 
         submission.submission.messages_sent.should_not be_include('Submission Graded')
         submission2.submission.messages_sent.should_not be_include('Submission Graded')
@@ -1055,6 +1033,46 @@ describe Submission do
       submission1.assign_assessor(submission2)
     end
   end
+
+  describe "assignment_visible_to_student?" do
+    before(:each) do
+      student_in_course(active_all: true)
+      @assignment.only_visible_to_overrides = true
+      @assignment.save!
+      @submission = @assignment.submit_homework(@student,  body: 'Lorem ipsum dolor')
+    end
+
+    it "submission should be visible with normal course" do
+      @submission.assignment_visible_to_student?(@student.id).should be_true
+    end
+
+    it "submission should not be visible with DA and no override or grade" do
+      @course.enable_feature!(:differentiated_assignments)
+      @submission.assignment_visible_to_student?(@student.id).should be_false
+    end
+
+    it "submission should be visible with DA and an override" do
+      @course.enable_feature!(:differentiated_assignments)
+      @student.enrollments.each(&:destroy!)
+      @section = @course.course_sections.create!(name: "test section")
+      student_in_section(@section, user: @student)
+      create_section_override_for_assignment(@submission.assignment, course_section: @section)
+      @submission.reload
+      @submission.assignment_visible_to_student?(@student.id).should be_true
+    end
+
+    it "submission should be visible with DA and a grade" do
+      @course.enable_feature!(:differentiated_assignments)
+      @student.enrollments.each(&:destroy!)
+      @section = @course.course_sections.create!(name: "test section")
+      student_in_section(@section, user: @student)
+      @assignment.grade_student(@user, {grade: 10})
+      @submission.reload
+      @submission.assignment_visible_to_student?(@student.id).should be_true
+    end
+  end
+
+
 end
 
 def submission_spec_model(opts={})
